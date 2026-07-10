@@ -113,6 +113,12 @@ def _keep(dest: str) -> bool:
 a.datas = [t for t in a.datas if _keep(t[0])]
 a.binaries = [t for t in a.binaries if _keep(t[0])]
 
+# Stripping symbols shrinks the bundle on macOS/Linux, but on Windows the
+# strip utility corrupts the bundled DLLs (e.g. python3xx.dll), causing
+# "LoadLibrary: Invalid access to memory location" at launch. So strip only
+# off Windows.
+_STRIP = sys.platform != "win32"
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
@@ -121,7 +127,7 @@ exe = EXE(
     exclude_binaries=True,
     name="OPENXMLJSON",
     debug=False,
-    strip=True,   # drop symbol tables (smaller; harmless for a release build)
+    strip=_STRIP,   # drop symbol tables (macOS/Linux only — unsafe on Windows)
     upx=False,    # UPX breaks macOS code-signing/notarization — never on
     console=False,
     target_arch=_TARGET_ARCH,   # None = native; "universal2" = Intel+ARM
@@ -133,7 +139,7 @@ coll = COLLECT(
     a.binaries,
     a.zipfiles,
     a.datas,
-    strip=True,
+    strip=_STRIP,
     upx=False,
     name="OPENXMLJSON",
 )

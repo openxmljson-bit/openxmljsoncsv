@@ -1,5 +1,20 @@
+# OS junk
 .DS_Store
+
+# Python bytecode / caches
 *.pyc
+*.pyo
+__pycache__/
+
+# Compiled native extensions and shared libraries
+*.so
+*.pyd
+*.dylib
+*.dll
+
+# Rust build output
 /target
-python/openxmljson/_native.abi3.so
-/python
+
+# PyInstaller / packaging build artifacts
+/build
+/dist

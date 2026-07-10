@@ -53,12 +53,33 @@ jobs:
       - name: Build & install native module
         run: pip install .
 
+      # Log what actually landed in the installed package so a missing submodule
+      # (the cause of "No module named openxmljson.app") is visible in CI.
+      - name: Verify installed package contents
+        shell: pwsh
+        run: |
+          python -c "import openxmljson, os; d=os.path.dirname(openxmljson.__file__); print(d); print(sorted(os.listdir(d)))"
+          python -c "import importlib; importlib.import_module('openxmljson.app'); print('openxmljson.app import OK')"
+
       # Run from packaging/ so the spec's bare "launcher.py" and icon paths
       # resolve, while writing dist/ and build/ to the repo root (where the
       # Inno Setup script expects dist\OPENXMLJSON\).
       - name: Build app with PyInstaller
         working-directory: packaging
         run: pyinstaller openxmljson.spec --distpath ../dist --workpath ../build --noconfirm
+
+      # Launch the frozen exe in self-test mode: it imports every app module and
+      # exits with a real code. Fails the build here (before packaging) if the
+      # bundle is missing a module, instead of shipping a broken installer.
+      - name: Smoke-test frozen app
+        shell: pwsh
+        env:
+          OXJ_SELFTEST: "1"
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $p = Start-Process -FilePath "dist\OPENXMLJSON\OPENXMLJSON.exe" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Frozen app self-test failed (exit $($p.ExitCode))" }
+          Write-Host "Frozen app self-test passed."
 
       - name: Build installer with Inno Setup
         shell: pwsh

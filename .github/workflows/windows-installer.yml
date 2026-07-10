@@ -1,0 +1,80 @@
+name: Windows installer
+
+on:
+  push:
+    branches: [main]        # build on every push to main
+    tags: ["v*"]            # and on version tags (v0.1.0, v1.2.3, …)
+  workflow_dispatch: {}      # and on-demand from the Actions tab
+
+permissions:
+  contents: write            # needed for creating a Release on tags
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo build
+        uses: Swatinem/rust-cache@v2
+
+      # Derive the app version. On a tag push (refs/tags/v1.2.3) strip the
+      # leading "v" and use 1.2.3; otherwise fall back to the spec default.
+      - name: Determine version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.1.0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin pyinstaller
+
+      # Builds the native module (openxmljson._native.pyd) and installs the
+      # package + its dependencies (PySide6-Essentials, …) into this env.
+      - name: Build & install native module
+        run: maturin develop --release
+
+      # Run from packaging/ so the spec's bare "launcher.py" and icon paths
+      # resolve, while writing dist/ and build/ to the repo root (where the
+      # Inno Setup script expects dist\OPENXMLJSON\).
+      - name: Build app with PyInstaller
+        working-directory: packaging
+        run: pyinstaller openxmljson.spec --distpath ../dist --workpath ../build --noconfirm
+
+      - name: Build installer with Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            "/DAppVersion=${{ steps.ver.outputs.version }}" `
+            packaging\windows\openxmljson.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OPENXMLJSON-${{ steps.ver.outputs.version }}-setup
+          path: dist/OPENXMLJSON-*-setup.exe
+          if-no-files-found: error
+
+      # Only on tag pushes: attach the installer to a GitHub Release.
+      - name: Publish Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/OPENXMLJSON-*-setup.exe

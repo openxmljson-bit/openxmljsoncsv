@@ -1,2 +1,5 @@
 .DS_Store
 *.pyc
+/target
+python/openxmljson/_native.abi3.so
+/python

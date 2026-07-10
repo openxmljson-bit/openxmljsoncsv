@@ -13,11 +13,6 @@ jobs:
   build:
     runs-on: windows-latest
 
-    # True only when the code-signing secrets are configured, so the workflow
-    # still builds (unsigned) for forks/contributors without the certificate.
-    env:
-      HAS_CERT: ${{ secrets.WINDOWS_CERT_BASE64 != '' }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -65,31 +60,6 @@ jobs:
         working-directory: packaging
         run: pyinstaller openxmljson.spec --distpath ../dist --workpath ../build --noconfirm
 
-      # Decode the base64 .pfx from secrets, import it into the runner's
-      # certificate store (so `signtool /a` can find it), and locate signtool
-      # from the Windows SDK (it isn't on PATH by default).
-      - name: Import code-signing certificate
-        if: env.HAS_CERT == 'true'
-        shell: pwsh
-        run: |
-          $bytes = [System.Convert]::FromBase64String("${{ secrets.WINDOWS_CERT_BASE64 }}")
-          Set-Content -Path "$env:RUNNER_TEMP\cert.pfx" -Value $bytes -AsByteStream
-          $pw = ConvertTo-SecureString -String "${{ secrets.WINDOWS_CERT_PASSWORD }}" -Force -AsPlainText
-          Import-PfxCertificate -FilePath "$env:RUNNER_TEMP\cert.pfx" `
-            -CertStoreLocation Cert:\CurrentUser\My -Password $pw
-          $st = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
-                Sort-Object FullName | Select-Object -Last 1
-          "SIGNTOOL=$($st.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
-
-      # Sign the inner application exe before it is packaged, so the app itself
-      # (not just the installer) shows a verified publisher when launched.
-      - name: Sign application executable
-        if: env.HAS_CERT == 'true'
-        shell: pwsh
-        run: |
-          & "$env:SIGNTOOL" sign /fd SHA256 /a /tr http://timestamp.digicert.com /td SHA256 `
-            dist\OPENXMLJSON\OPENXMLJSON.exe
-
       - name: Build installer with Inno Setup
         shell: pwsh
         run: |
@@ -97,15 +67,6 @@ jobs:
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
             "/DAppVersion=${{ steps.ver.outputs.version }}" `
             packaging\windows\openxmljson.iss
-
-      # Sign the finished installer — this is the publisher name users see in
-      # the UAC / SmartScreen prompt when they run Setup.
-      - name: Sign installer
-        if: env.HAS_CERT == 'true'
-        shell: pwsh
-        run: |
-          & "$env:SIGNTOOL" sign /fd SHA256 /a /tr http://timestamp.digicert.com /td SHA256 `
-            dist\OPENXMLJSON-${{ steps.ver.outputs.version }}-setup.exe
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4

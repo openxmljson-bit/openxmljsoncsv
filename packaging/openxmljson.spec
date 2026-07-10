@@ -19,7 +19,7 @@
 
 import os
 import sys
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_submodules
 
 # Target architecture for the macOS build. Leave unset for a native (host-arch)
 # build; set OXJ_TARGET_ARCH=universal2 to build a Universal binary that runs on
@@ -67,26 +67,12 @@ _EXCLUDE_PYSIDE = [
 ]
 _EXCLUDE_OTHER = ["tkinter", "unittest", "pydoc", "pdb", "test", "lib2to3"]
 
-# Collect the whole openxmljson package — every pure-Python submodule
-# (app, model, tree, …), its data files, and the native extension. Using
-# collect_all is more reliable than collect_submodules alone: it guarantees
-# the Qt app shell modules are bundled, so `from openxmljson.app import run`
-# resolves in the frozen build.
-_pkg_datas, _pkg_binaries, _pkg_hidden = collect_all("openxmljson")
-
-# Also point at the in-repo Python source as a fallback so submodules resolve
-# even if the installed package layout is incomplete. Windows only: the source
-# tree carries a committed Linux/macOS `_native.abi3.so` that must not shadow
-# the real extension on those platforms (on Windows a .so is never a valid
-# extension suffix, so it is ignored there).
-_extra_paths = [os.path.join(SPECPATH, "..", "python")] if sys.platform == "win32" else []
-
 a = Analysis(
     ["launcher.py"],
-    pathex=[".", *_extra_paths],
-    binaries=_pkg_binaries,
-    datas=_pkg_datas,
-    hiddenimports=["openxmljson._native", *_pkg_hidden],
+    pathex=["."],
+    binaries=[],
+    datas=[],
+    hiddenimports=["openxmljson._native", *collect_submodules("openxmljson")],
     hookspath=[],
     runtime_hooks=[],
     excludes=_EXCLUDE_PYSIDE + _EXCLUDE_OTHER,

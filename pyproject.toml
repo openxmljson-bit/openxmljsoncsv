@@ -1,0 +1,37 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "openxmljson"
+version = "0.1.0"
+description = "View, navigate and search very large JSON/XML/CSV files via a zero-copy memory-mapped structural index"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    # Essentials only (QtCore/QtGui/QtWidgets) — the app uses no add-on Qt
+    # modules (WebEngine, Qml, 3D, Charts, …), so this drops ~1 GB vs full
+    # PySide6. Switch back to "PySide6" if an add-on module is ever needed.
+    "PySide6-Essentials>=6.5",
+    "certifi",
+    # macOS: lets the app rename its menu-bar entry from "Python" to
+    # OPENXMLJSON when running unbundled (see app._set_macos_process_name).
+    "pyobjc-framework-Cocoa; sys_platform == 'darwin'",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+]
+
+[project.gui-scripts]
+openxmljson = "openxmljson.__main__:main"
+
+[tool.maturin]
+manifest-path = "crates/oxj-py/Cargo.toml"
+module-name = "openxmljson._native"
+python-source = "python"
+features = ["pyo3/extension-module"]
+strip = true

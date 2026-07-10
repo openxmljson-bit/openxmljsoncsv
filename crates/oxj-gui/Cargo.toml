@@ -1,0 +1,17 @@
+[package]
+name = "oxj-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure-Rust egui front-end for the OPENXMLJSON engine (no Python)"
+
+[[bin]]
+name = "oxj-gui"
+path = "src/main.rs"
+
+[dependencies]
+oxj-core = { path = "../oxj-core" }
+eframe = "0.27"
+egui = "0.27"
+rfd = "0.14"
+regex = "1.10"

@@ -1,0 +1,18 @@
+[package]
+name = "oxj-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PyO3 bindings exposing oxj-core as openxmljson._native"
+
+[lib]
+name = "oxj_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+oxj-core = { path = "../oxj-core" }
+# NOTE: pyo3/extension-module is injected by maturin via pyproject.toml
+# ([tool.maturin] features), so plain `cargo build` of this crate still
+# links a test-friendly cdylib on machines with a Python dev environment.
+pyo3 = { version = "0.21", features = ["abi3-py39"] }
+regex = "1.10"

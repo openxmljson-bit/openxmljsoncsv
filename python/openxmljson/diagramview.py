@@ -17,7 +17,7 @@ import re
 from datetime import datetime
 from typing import Dict, List, Tuple
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -70,6 +70,8 @@ class _Canvas(QGraphicsView):
 
     def __init__(self, scene: QGraphicsScene, parent=None):
         super().__init__(scene, parent)
+        self.owner = None          # set by DiagramView; used for smart-zoom fit
+        self._smart_on = False
         self.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
@@ -89,8 +91,48 @@ class _Canvas(QGraphicsView):
         self.setBackgroundBrush(QBrush(pm))
 
     def wheelEvent(self, event):  # noqa: N802
-        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        self.scale(factor, factor)
+        # Ctrl + wheel zooms (for mouse users); plain two-finger scroll pans.
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+            self.scale(factor, factor)
+            self._smart_on = False
+            event.accept()
+            return
+        delta = event.pixelDelta()
+        if delta.isNull():
+            a = event.angleDelta()
+            delta = QPoint(a.x() // 8, a.y() // 8)
+        self.horizontalScrollBar().setValue(
+            self.horizontalScrollBar().value() - delta.x())
+        self.verticalScrollBar().setValue(
+            self.verticalScrollBar().value() - delta.y())
+        event.accept()
+
+    def event(self, e):  # noqa: N802
+        # macOS trackpad pinch / smart-zoom arrive as native gesture events.
+        if e.type() == QEvent.Type.NativeGesture:
+            gtype = e.gestureType()
+            if gtype == Qt.NativeGestureType.ZoomNativeGesture:
+                factor = 1.0 + e.value()   # spread > 0 (in), pinch < 0 (out)
+                if factor > 0:
+                    self.scale(factor, factor)
+                    self._smart_on = False
+                return True
+            if gtype == Qt.NativeGestureType.SmartZoomNativeGesture:
+                self._smart_zoom(e)
+                return True
+        return super().event(e)
+
+    def _smart_zoom(self, e) -> None:
+        if self._smart_on:
+            if self.owner is not None:
+                self.owner.fit()
+            self._smart_on = False
+        else:
+            scene_pt = self.mapToScene(e.position().toPoint())
+            self.scale(2.2, 2.2)
+            self.centerOn(scene_pt)
+            self._smart_on = True
 
 
 class DiagramView(QWidget):
@@ -98,6 +140,7 @@ class DiagramView(QWidget):
         super().__init__(parent)
         self._scene = QGraphicsScene(self)
         self._view = _Canvas(self._scene, self)
+        self._view.owner = self
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._view)

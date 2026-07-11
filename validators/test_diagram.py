@@ -30,33 +30,55 @@ XML_NETWORK = {
 }
 
 
-def test_scalar_fields_and_edges():
-    g = diagram.build_graph(FRUITS, root_title="Fruits")
-    d = g.as_dict()
-    titles = [n["title"] for n in d["nodes"]]
-    assert "Fruits" in titles
-    assert "fruits[0]" in titles
-    assert "nutrients" in titles          # nested object becomes its own card
-
-    ids = {n["id"] for n in d["nodes"]}
-    for a, b in d["edges"]:               # every edge references real cards
-        assert a in ids and b in ids
-
-    apple = next(n for n in d["nodes"] if n["title"] == "fruits[0]")
-    fields = dict(apple["fields"])
-    assert fields["name"] == "Apple"      # scalar shown inline
-    assert fields["nutrients"] == "{…}"   # nested object shown as a link marker
+def _fields(node):
+    return {f[0]: f for f in node.fields}
 
 
-def test_edges_form_a_tree_from_root():
-    g = diagram.build_graph(FRUITS, root_title="Fruits")
-    # Root card has no incoming edge; every other card has exactly one parent.
-    incoming = {}
-    for a, b in g.edges:
-        incoming[b] = incoming.get(b, 0) + 1
-    root_id = g.nodes[0].id
-    assert root_id not in incoming
-    assert all(c == 1 for c in incoming.values())
+def test_root_inlines_array_and_links_to_elements():
+    g = diagram.build_graph(FRUITS)
+    root = g.nodes[0]
+    # Root card is the object with one row: fruits: [2 items] (a link row).
+    assert root.fields == [("fruits", "[2 items]", "array", True)]
+    # One edge per array element, all labelled with the key.
+    fruit_edges = [e for e in g.edges if e[0] == root.id]
+    assert len(fruit_edges) == 2
+    assert all(lbl == "fruits" and row == 0 for _, _, lbl, row in fruit_edges)
+
+
+def test_scalar_rows_are_typed():
+    g = diagram.build_graph(FRUITS)
+    # Find a fruit card (has a 'name' row).
+    fruit = next(n for n in g.nodes if "name" in _fields(n))
+    f = _fields(fruit)
+    assert f["name"] == ("name", "Apple", "string", False)
+    assert f["color"][2] == "string"        # "#FF0000"
+    assert f["nutrients"][2] == "object" and f["nutrients"][3] is True  # link row
+
+
+def test_number_type_detected():
+    g = diagram.build_graph(FRUITS)
+    nutrients = next(n for n in g.nodes if "calories" in _fields(n))
+    assert _fields(nutrients)["calories"][2] == "number"
+    assert _fields(nutrients)["calories"][1] == "52"
+
+
+def test_edges_are_labelled_and_reference_real_nodes():
+    g = diagram.build_graph(FRUITS)
+    ids = {n.id for n in g.nodes}
+    labels = set()
+    for parent, child, label, row in g.edges:
+        assert parent in ids and child in ids
+        assert isinstance(row, int)
+        labels.add(label)
+    assert {"fruits", "nutrients"} <= labels
+
+
+def test_empty_container_is_not_a_link():
+    g = diagram.build_graph({"a": {}, "b": [], "c": 1})
+    root = _fields(g.nodes[0])
+    assert root["a"] == ("a", "{}", "object", False)
+    assert root["b"] == ("b", "[]", "array", False)
+    assert g.edges == []  # nothing to link to
 
 
 def test_respects_max_nodes():
@@ -67,14 +89,20 @@ def test_respects_max_nodes():
 
 
 def test_scalar_root():
-    g = diagram.build_graph("hello", root_title="value")
+    g = diagram.build_graph("hello")
     assert len(g.nodes) == 1
-    assert g.nodes[0].fields == [("value", "hello")]
+    assert g.nodes[0].fields == [("", "hello", "string", False)]
     assert g.edges == []
 
 
 def test_xml_attributes_become_fields():
-    g = diagram.build_graph(XML_NETWORK, root_title="network")
-    assert any("@id" in dict(n.fields) for n in g.nodes)
+    g = diagram.build_graph(XML_NETWORK)
+    assert any("@id" in _fields(n) for n in g.nodes)
+
+
+def test_nodes_have_titles():
+    g = diagram.build_graph(FRUITS, root_title="fruits.json")
     titles = [n.title for n in g.nodes]
-    assert "network" in titles
+    assert g.nodes[0].title == "fruits.json"        # root uses the given title
+    assert "fruits[0]" in titles                     # array element titled key[i]
+    assert "nutrients" in titles                     # nested object titled by key

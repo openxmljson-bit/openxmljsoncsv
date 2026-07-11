@@ -914,6 +914,7 @@ class MainWindow(QMainWindow):
             self._expand_doc_action.setEnabled(can_expand)
         self._sync_table_controls()
         self._sync_xml_controls()
+        self._sync_diagram_controls()
         self._sync_tools_controls()
         self._sync_scope_combo()
         if view is None or view.path is None:
@@ -1054,6 +1055,16 @@ class MainWindow(QMainWindow):
         self._xml_button_action = bar.addWidget(self._xml_button)
         self._xml_button_action.setVisible(False)
 
+        # Flow Diagram toggle — shown only for documents small enough to draw
+        # (mirrors the Table / XML view buttons).
+        self._diagram_button = QToolButton()
+        self._diagram_button.setText("Diagram")
+        self._diagram_button.setCheckable(True)
+        self._diagram_button.setToolTip("Show the data as a flow diagram")
+        self._diagram_button.toggled.connect(self.set_diagram_view)
+        self._diagram_button_action = bar.addWidget(self._diagram_button)
+        self._diagram_button_action.setVisible(False)
+
     # -- menus --------------------------------------------------------------------
 
     def _action(self, menu, label, slot, shortcut=None) -> QAction:
@@ -1164,6 +1175,10 @@ class MainWindow(QMainWindow):
         self._xml_action.setEnabled(False)
         self._xml_action.toggled.connect(self.set_xml_view)
         view_menu.addAction(self._xml_action)
+        self._diagram_action = QAction("Flow Diagram", self, checkable=True)
+        self._diagram_action.setEnabled(False)
+        self._diagram_action.toggled.connect(self.set_diagram_view)
+        view_menu.addAction(self._diagram_action)
         self._xml_highlight_action = QAction(
             "XML Syntax Highlighting", self, checkable=True)
         self._xml_highlight_action.setChecked(
@@ -1809,6 +1824,13 @@ class MainWindow(QMainWindow):
                 view.set_xml_view(enabled)
         self._sync_xml_controls()
 
+    def set_diagram_view(self, enabled: bool) -> None:
+        view = self.current_view()
+        if view is not None:
+            with self._busy():
+                view.set_diagram_view(enabled)
+        self._sync_diagram_controls()
+
     def set_xml_highlight(self, enabled: bool) -> None:
         self._settings.setValue("xml_highlight", "true" if enabled else "false")
         with self._busy():
@@ -1862,6 +1884,29 @@ class MainWindow(QMainWindow):
             )
             self._table_button.blockSignals(False)
             self._table_button_action.setVisible(supported)
+
+    def _sync_diagram_controls(self) -> None:
+        """Reflect the current tab's diagram support/mode in the View ▸ Flow
+        Diagram action and the toolbar Diagram button."""
+        view = self.current_view()
+        supported = view is not None and view.supports_diagram()
+        active = view is not None and view.diagram_mode()
+        if hasattr(self, "_diagram_action"):
+            self._diagram_action.blockSignals(True)
+            self._diagram_action.setEnabled(supported)
+            self._diagram_action.setChecked(active)
+            self._diagram_action.blockSignals(False)
+        if hasattr(self, "_diagram_button"):
+            self._diagram_button.blockSignals(True)
+            self._diagram_button.setChecked(active)
+            # Label names the view you'll switch TO.
+            self._diagram_button.setText("Tree View" if active else "Diagram")
+            self._diagram_button.setToolTip(
+                "Switch to the tree view" if active
+                else "Show the data as a flow diagram"
+            )
+            self._diagram_button.blockSignals(False)
+            self._diagram_button_action.setVisible(supported)
 
     def _sync_scope_combo(self) -> None:
         """The 'Attributes' search scope is XML-only — show it only for XML

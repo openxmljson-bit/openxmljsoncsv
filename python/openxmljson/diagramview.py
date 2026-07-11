@@ -14,6 +14,7 @@ headlessly testable; this module is imported only when the GUI runs.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Dict, List, Tuple
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer
@@ -410,7 +411,7 @@ class DiagramView(QWidget):
         if rect.isEmpty():
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, f"Export {fmt.upper()}", f"diagram.{fmt}",
+            self, f"Export {fmt.upper()}", _default_name(fmt),
             f"{fmt.upper()} image (*.{fmt})")
         if not path:
             return
@@ -432,7 +433,7 @@ class DiagramView(QWidget):
         if rect.isEmpty():
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export PDF", "diagram.pdf", "PDF document (*.pdf)")
+            self, "Export PDF", _default_name("pdf"), "PDF document (*.pdf)")
         if not path:
             return
         writer = QPdfWriter(path)
@@ -531,6 +532,11 @@ class DiagramView(QWidget):
 
 
 # -- helpers / palettes / font -------------------------------------------------
+
+def _default_name(ext: str) -> str:
+    """Default export filename with a timestamp, e.g. diagram_20260712_143005.png."""
+    return f"diagram_{datetime.now():%Y%m%d_%H%M%S}.{ext}"
+
 
 def _body_path(x, y, w, h, r, title_h) -> QPainterPath:
     bx, bw = x + 1, w - 2

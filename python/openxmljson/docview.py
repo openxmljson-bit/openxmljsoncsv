@@ -37,6 +37,11 @@ FILTER_MATCH_LIMIT = 500_000
 #: Auto-expand the filtered tree when it has at most this many rows.
 FILTER_EXPAND_LIMIT = 5_000
 
+#: The flow diagram reconstructs the document in Python and lays out a card per
+#: node, so it is a small/medium-document feature. Above this node count it is
+#: not offered (a multi-GB file has far too many nodes to draw meaningfully).
+DIAGRAM_MAX_NODES = 50_000
+
 
 def _is_lazy(doc) -> bool:
     """True for on-demand (lazy) documents. Tolerant of wrappers that
@@ -83,6 +88,7 @@ class DocumentView(QWidget):
         self._table_model = None
         self._table_proxy = None  # RecordFilterProxy over the table
         self.xml_view = None  # QPlainTextEdit, created lazily for XML tabs
+        self.diagram = None  # DiagramView (QGraphicsView), created lazily
         self._xml_highlighter = None
         self._xml_highlight = False  # syntax highlighting off by default (fast)
         self.filter_text = ""
@@ -123,7 +129,7 @@ class DocumentView(QWidget):
         # (they were parented to this view for lifetime safety).
         if self.table is not None:
             self.table.setModel(None)
-            self._stack.setCurrentIndex(0)
+        self._stack.setCurrentIndex(0)  # always (re)bind on the tree page
         self.tree.set_search(None)
         self.tree.setModel(self.model)
         # Enable "Expand All" for any eagerly-opened doc (a file that fits in
@@ -181,6 +187,10 @@ class DocumentView(QWidget):
             self._style_xml_view()
             if self._xml_highlighter is not None:
                 self._xml_highlighter.set_style(style)
+        if self.diagram is not None:
+            self.diagram.apply_style(style)
+            if self.diagram_mode():
+                self.set_diagram_view(True)  # re-render with the new palette
 
     def set_font(self, font) -> None:
         self.tree.setFont(font)
@@ -564,6 +574,65 @@ class DocumentView(QWidget):
             f" selection-color: {s.text.name()};"
             " border: none; padding: 4px; }"
         )
+
+    # -- flow diagram -----------------------------------------------------------------
+
+    def supports_diagram(self) -> bool:
+        """The diagram is offered only for eager (in-memory) documents under a
+        node-count cap; huge/lazy documents have too many nodes to draw."""
+        if self.doc is None or self.model is None or not self.eager:
+            return False
+        try:
+            return self.doc.node_count() <= DIAGRAM_MAX_NODES
+        except Exception:
+            return False
+
+    def diagram_mode(self) -> bool:
+        return (
+            self.diagram is not None
+            and self._stack.currentWidget() is self.diagram
+        )
+
+    def set_diagram_view(self, enabled: bool) -> None:
+        """Show the node/edge flow diagram instead of the tree. Reconstructs
+        the document and lays out a card per node; gated by ``supports_diagram``
+        so it never runs on a huge/lazy file."""
+        if not enabled:
+            self._stack.setCurrentIndex(0)  # back to the tree
+            return
+        if not self.supports_diagram():
+            self.status_message.emit(
+                "The diagram is available only for smaller documents."
+            )
+            return
+        try:
+            root = self.doc.root()
+            kids = self.doc.child_nodes(root)
+            value = [self.model.reconstruct(k) for k in kids]
+            value = value[0] if len(value) == 1 else value
+        except (RecursionError, MemoryError, ValueError):
+            self.status_message.emit("Couldn't build a diagram from this document.")
+            return
+
+        from openxmljson.diagram import build_graph
+        from openxmljson.diagramview import DiagramView
+
+        # Root card has no title bar (empty title) — the file name isn't useful
+        # inside the diagram; child cards are titled by their key.
+        graph = build_graph(value, root_title="")
+        if self.diagram is None:
+            self.diagram = DiagramView(self)
+            self._stack.addWidget(self.diagram)
+        self.diagram.apply_style(self._style)
+        self.diagram.set_graph(graph)
+        self._stack.setCurrentWidget(self.diagram)
+        if graph.truncated:
+            self.status_message.emit(
+                f"Diagram shows the first {len(graph.nodes):,} nodes "
+                f"(document is large)."
+            )
+        else:
+            self.status_message.emit(f"Diagram: {len(graph.nodes):,} nodes")
 
     # -- view actions ----------------------------------------------------------------
 

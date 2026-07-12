@@ -1,0 +1,154 @@
+name: macOS DMG (universal2)
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write            # needed to attach the DMG to a Release on tags
+
+# A universal2 (Intel + Apple Silicon) app requires EVERY bundled binary to be
+# universal2: the Python interpreter, PySide6, and our Rust _native module.
+# setup-python ships single-arch builds, so we install the official python.org
+# universal2 Python instead, build the Rust module for both arches with maturin,
+# and let PyInstaller emit a universal2 bundle (OXJ_TARGET_ARCH=universal2).
+env:
+  PYTHON_VERSION: "3.12.7"
+  # Signing/notarization run only when the secrets are configured; without them
+  # the workflow still produces an unsigned DMG.
+  HAS_CERT: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
+  HAS_NOTARY: ${{ secrets.MACOS_NOTARY_PASSWORD != '' }}
+
+jobs:
+  build:
+    runs-on: macos-14        # Apple Silicon host; cross-builds the x86_64 half
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install universal2 Python (python.org)
+        run: |
+          set -euo pipefail
+          url="https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-macos11.pkg"
+          curl -fsSL "$url" -o /tmp/python.pkg
+          sudo installer -pkg /tmp/python.pkg -target /
+          pydir="/Library/Frameworks/Python.framework/Versions/3.12/bin"
+          echo "$pydir" >> "$GITHUB_PATH"
+          # Confirm the interpreter itself is universal2.
+          file "$pydir/python3"
+
+      - name: Set up Rust (with both mac targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Cache Cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Determine version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.1.0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install build tooling
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install maturin pyinstaller
+
+      # Build a universal2 wheel of the native module, then install it (pip
+      # pulls the universal2 PySide6-Essentials / jsbeautifier / certifi deps).
+      - name: Build & install universal2 package
+        run: |
+          set -euo pipefail
+          maturin build --release --target universal2-apple-darwin --out wheels
+          python3 -m pip install wheels/*.whl
+
+      - name: Build app with PyInstaller (universal2)
+        working-directory: packaging
+        env:
+          OXJ_TARGET_ARCH: universal2
+        run: pyinstaller openxmljson.spec --distpath ../dist --workpath ../build --noconfirm
+
+      - name: Verify the bundle is universal2
+        run: |
+          bin="dist/OPENXMLJSON.app/Contents/MacOS/OPENXMLJSON"
+          test -d "dist/OPENXMLJSON.app" || { echo "app bundle missing"; exit 1; }
+          file "$bin"
+          # Fail the build if it isn't a 2-arch (x86_64 + arm64) binary.
+          file "$bin" | grep -q "2 architectures" || {
+            echo "ERROR: bundle is not universal2"; exit 1; }
+
+      - name: Import signing certificate
+        if: env.HAS_CERT == 'true'
+        env:
+          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" \
+            -k "$KEYCHAIN" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # Make the temporary keychain searchable (kept alongside the default).
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | sed s/\"//g)
+
+      - name: Sign app bundle
+        if: env.HAS_CERT == 'true'
+        env:
+          SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          ent="packaging/macos/entitlements.plist"
+          args=(--deep --force --options runtime --timestamp --sign "$SIGN_IDENTITY")
+          [ -f "$ent" ] && args+=(--entitlements "$ent")
+          codesign "${args[@]}" "dist/OPENXMLJSON.app"
+          codesign --verify --deep --strict --verbose=2 "dist/OPENXMLJSON.app"
+
+      - name: Create DMG
+        run: |
+          DMG="dist/OPENXMLJSON-${{ steps.ver.outputs.version }}-universal2.dmg"
+          hdiutil create -volname "OPENXMLJSON" \
+            -srcfolder "dist/OPENXMLJSON.app" -ov -format UDZO "$DMG"
+          echo "Built $DMG"
+
+      - name: Notarize and staple DMG
+        if: env.HAS_CERT == 'true' && env.HAS_NOTARY == 'true'
+        env:
+          APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          DMG="dist/OPENXMLJSON-${{ steps.ver.outputs.version }}-universal2.dmg"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$TEAM_ID" --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OPENXMLJSON-${{ steps.ver.outputs.version }}-universal2-dmg
+          path: dist/OPENXMLJSON-*-universal2.dmg
+          if-no-files-found: error
+
+      - name: Publish Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/OPENXMLJSON-*-universal2.dmg

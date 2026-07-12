@@ -15,6 +15,9 @@ dependencies = [
     # PySide6. Switch back to "PySide6" if an add-on module is ever needed.
     "PySide6-Essentials>=6.5",
     "certifi",
+    # Pure-Python JavaScript beautifier (js-beautify port) for the .js
+    # plain-text formatter. No native deps.
+    "jsbeautifier",
     # macOS: lets the app rename its menu-bar entry from "Python" to
     # OPENXMLJSON when running unbundled (see app._set_macos_process_name).
     "pyobjc-framework-Cocoa; sys_platform == 'darwin'",

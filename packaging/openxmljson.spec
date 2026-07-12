@@ -72,7 +72,11 @@ a = Analysis(
     pathex=["."],
     binaries=[],
     datas=[],
-    hiddenimports=["openxmljson._native", *collect_submodules("openxmljson")],
+    hiddenimports=[
+        "openxmljson._native",
+        *collect_submodules("openxmljson"),
+        *collect_submodules("jsbeautifier"),  # .js formatter (lazy-imported)
+    ],
     hookspath=[],
     runtime_hooks=[],
     excludes=_EXCLUDE_PYSIDE + _EXCLUDE_OTHER,

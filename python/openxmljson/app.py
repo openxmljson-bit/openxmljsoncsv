@@ -48,8 +48,12 @@ from openxmljson.styles import WATERMARK_TEXT, resolve, stylesheet
 from openxmljson.tree import EXPAND_ALL_CONFIRM_NODES, EXPAND_ALL_MAX_NODES
 
 FILE_FILTER = (
-    "Documents (*.json *.jsonl *.ndjson *.xml *.csv *.tsv *.tab);;All files (*)"
+    "Documents (*.json *.jsonl *.ndjson *.xml *.csv *.tsv *.tab *.txt *.js);;"
+    "All files (*)"
 )
+
+#: Extensions opened as read-only plain text (no structural index/tree).
+TEXT_EXTS = (".txt", ".js")
 
 SCOPES = ["All", "Keys", "Values", "Attributes"]
 
@@ -917,8 +921,23 @@ class MainWindow(QMainWindow):
         self._sync_xml_controls()
         self._sync_diagram_controls()
         self._sync_jq_controls()
+        if hasattr(self, "_jsfmt_action"):
+            self._jsfmt_action.setEnabled(view is not None and view.can_format_js())
         self._sync_tools_controls()
         self._sync_scope_combo()
+        # Hide the whole Find bar when no document is open (welcome screen).
+        if hasattr(self, "_find_bar"):
+            self._find_bar.setVisible(view is not None)
+        # Plain-text (.txt/.js) tabs: structural scope + row filter don't apply,
+        # so hide them and turn Find into a plain-text search.
+        is_text = view is not None and getattr(view, "is_text", False)
+        if hasattr(self, "_scope_action"):
+            self._scope_action.setVisible(not is_text)
+        if hasattr(self, "_filter_action"):
+            self._filter_action.setVisible(not is_text)
+        if hasattr(self, "search_edit"):
+            self.search_edit.setPlaceholderText(
+                "Find in text" if is_text else "Find")
         if view is None or view.path is None:
             self.setWindowTitle("OPENXMLJSON")
             self._load_label.setText("")
@@ -965,6 +984,7 @@ class MainWindow(QMainWindow):
         bar = QToolBar("Find")
         bar.setMovable(False)
         self.addToolBar(bar)
+        self._find_bar = bar
 
         self.case_button = QToolButton()
         self.case_button.setText("Aa")
@@ -991,7 +1011,7 @@ class MainWindow(QMainWindow):
 
         self.scope_combo = QComboBox()
         self.scope_combo.addItems(SCOPES)
-        bar.addWidget(self.scope_combo)
+        self._scope_action = bar.addWidget(self.scope_combo)
 
         find_button = QPushButton("Find")
         find_button.clicked.connect(self.run_search)
@@ -1033,7 +1053,7 @@ class MainWindow(QMainWindow):
         # Still clear the filter the moment the box is emptied (e.g. the clear
         # button), so a filter is never left stuck when there's no text.
         self.filter_edit.textChanged.connect(self._on_filter_text_changed)
-        bar.addWidget(self.filter_edit)
+        self._filter_action = bar.addWidget(self.filter_edit)
 
         # Table View: a quick toggle beside the filter box, shown only for
         # CSV/TSV tabs (mirrors View ▸ CSV Table View).
@@ -1067,6 +1087,10 @@ class MainWindow(QMainWindow):
         self._diagram_button_action = bar.addWidget(self._diagram_button)
         self._diagram_button_action.setVisible(False)
 
+        # Start hidden — the welcome screen (no document) shows no Find bar;
+        # _on_tab_changed reveals it when a document is open.
+        bar.setVisible(False)
+
     def _build_jq_bar(self) -> None:
         """A jq filter bar on its own row below the Find bar. Shown only for
         small/medium eager documents (see _sync_jq_controls)."""
@@ -1086,6 +1110,7 @@ class MainWindow(QMainWindow):
             "Press Enter to run. e.g.  .items | sort_by(.price)"
         )
         self.jq_edit.returnPressed.connect(self._run_jq_now)
+        self.jq_edit.textChanged.connect(self._on_jq_text_changed)
         bar.addWidget(self.jq_edit)
 
         jq_button = QPushButton("Run")
@@ -1175,6 +1200,10 @@ class MainWindow(QMainWindow):
         self._minify_action = self._action(
             tools_menu, "Minify (Compact) → New Tab",
             lambda *_: self.reformat_document(False))
+        # JavaScript beautifier for .js plain-text tabs (enabled per tab).
+        self._jsfmt_action = self._action(
+            tools_menu, "Format JavaScript", self.format_js_document)
+        self._jsfmt_action.setEnabled(False)
         tools_menu.addSeparator()
         self._action(tools_menu, "Generate JSON Schema → New Tab",
                      self.generate_schema)
@@ -1426,11 +1455,6 @@ class MainWindow(QMainWindow):
                     return
             if path in self._pending_opens:
                 return  # already loading (rapid double-open)
-        use_lazy = self._lazy_for(path)
-        # The RAM warning is only relevant to an eager, file-sized index;
-        # lazy indexing loads on demand and won't exhaust memory.
-        if not use_lazy and not self._confirm_large_file(path):
-            return
         if self.tabs.count() + len(self._pending_opens) >= MAX_TABS:
             QMessageBox.information(
                 self,
@@ -1438,6 +1462,17 @@ class MainWindow(QMainWindow):
                 f"Up to {MAX_TABS} documents can be open at once — each tab "
                 "keeps its structural index in memory. Close a tab first.",
             )
+            return
+        # Plain-text formats (.txt/.js) have no structure to index — open them
+        # in a read-only text tab, bypassing the engine (and the lazy/large-file
+        # machinery, which is about the structural index) entirely.
+        if os.path.splitext(path)[1].lower() in TEXT_EXTS:
+            self._open_text_view(path)
+            return
+        use_lazy = self._lazy_for(path)
+        # The RAM warning is only relevant to an eager, file-sized index;
+        # lazy indexing loads on demand and won't exhaust memory.
+        if not use_lazy and not self._confirm_large_file(path):
             return
         # Parse off the GUI thread so the window stays responsive and the
         # activity LEDs animate during load.
@@ -1492,6 +1527,36 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(index)
             self._restore_current_path = None
 
+    def _open_text_view(self, path: str) -> None:
+        """Open a .txt/.js file as a read-only plain-text tab (no engine)."""
+        view = self._new_view()
+        # Attach any URL metadata stashed by open_url (so Copy as cURL works and
+        # the pending entry doesn't leak), then load the text.
+        meta = self._pending_url.pop(path, None)
+        if meta is not None:
+            view.source_url, view.curl_command = meta
+        try:
+            view.load_text(path)
+        except OSError as exc:
+            QMessageBox.critical(self, "Cannot open file", str(exc))
+            return
+        index = self.tabs.addTab(view, os.path.basename(path))
+        self.tabs.setTabToolTip(index, path)
+        from PySide6.QtWidgets import QTabBar
+
+        self.tabs.tabBar().setTabButton(
+            index, QTabBar.ButtonPosition.RightSide,
+            self._make_close_button(view),
+        )
+        self.tabs.setCurrentIndex(index)
+        self._update_tab_marks()
+        self._bump_file_type("TEXT")
+        self._update_central()
+        self._remember_recent(path)
+        self._watch(path)
+        self.statusBar().showMessage(view.info)
+        self.setWindowTitle(f"{os.path.basename(path)} — OPENXMLJSON")
+
     def reload_file(self) -> None:
         """Re-parse the current tab's file — for when it changed on disk."""
         view = self.current_view()
@@ -1499,6 +1564,17 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Nothing to reload.")
             return
         path = view.path
+        # Plain-text tabs reload synchronously (no engine parse).
+        if getattr(view, "is_text", False):
+            try:
+                view.load_text(path)
+            except OSError as exc:
+                QMessageBox.critical(self, "Cannot reload file", str(exc))
+                return
+            self._clear_dirty_mark(view)
+            self._watch(path)
+            self.statusBar().showMessage(view.info)
+            return
         use_lazy = self._lazy_for(path)
         if not use_lazy and not self._confirm_large_file(path):
             return
@@ -2163,7 +2239,9 @@ class MainWindow(QMainWindow):
     JQ_MAX_NODES = 200_000
 
     def _sync_jq_controls(self) -> None:
-        """Show the jq bar only for eager documents under the node-count cap."""
+        """Show the jq bar only for eager documents under the node-count cap,
+        and restore this tab's own jq filter (jq_text is per-tab, so it survives
+        opening a result tab and is gone once the tab is closed)."""
         if not hasattr(self, "_jq_toolbar"):
             return
         view = self.current_view()
@@ -2174,6 +2252,15 @@ class MainWindow(QMainWindow):
             except Exception:
                 ok = False
         self._jq_toolbar.setVisible(ok)
+        if hasattr(self, "jq_edit"):
+            self.jq_edit.blockSignals(True)
+            self.jq_edit.setText(getattr(view, "jq_text", "") if view else "")
+            self.jq_edit.blockSignals(False)
+
+    def _on_jq_text_changed(self, text: str) -> None:
+        view = self.current_view()
+        if view is not None:
+            view.jq_text = text
 
     def _run_jq_now(self) -> None:
         """Run the jq bar's filter (via the native jaq engine) over the current
@@ -2235,6 +2322,30 @@ class MainWindow(QMainWindow):
         self._open_text_as_tab(content, ".json")
         self.statusBar().showMessage("Generated JSON Schema opened in a new tab.",
                                      4000)
+
+    def format_js_document(self) -> None:
+        """Tools ▸ Format JavaScript — beautify the current .js plain-text tab
+        in place (read-only view is refreshed with the formatted source)."""
+        view = self.current_view()
+        if view is None or not view.can_format_js():
+            self.statusBar().showMessage("Open a .js file first.")
+            return
+        from openxmljson.codeview import beautify_js
+
+        try:
+            with self._busy():
+                formatted = beautify_js(view.text_view.toPlainText())
+        except ImportError:
+            QMessageBox.warning(
+                self, "Formatter unavailable",
+                "The JavaScript formatter needs the 'jsbeautifier' package. "
+                "Install it with: pip install jsbeautifier")
+            return
+        except Exception as exc:  # noqa: BLE001 - beautifier is best-effort
+            QMessageBox.warning(self, "Cannot format", str(exc))
+            return
+        view.text_view.setPlainText(formatted)
+        self.statusBar().showMessage("Formatted JavaScript.", 4000)
 
     def validate_against_schema(self) -> None:
         """Tools ▸ Validate — validate the current document against a chosen
@@ -2392,8 +2503,15 @@ class MainWindow(QMainWindow):
         self.search_edit.selectAll()
 
     def copy_row(self) -> None:
+        from PySide6.QtWidgets import QPlainTextEdit
+
         focus = QApplication.focusWidget()
         if isinstance(focus, QLineEdit):
+            focus.copy()
+            return
+        # Copy from a text editor (plain-text/.js tab or the XML source view)
+        # — the window-level Copy shortcut otherwise shadows its native copy.
+        if isinstance(focus, QPlainTextEdit):
             focus.copy()
             return
         view = self.current_view()
@@ -2638,6 +2756,13 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Open a file first.")
             return
         raw, scope, case, regex = self._find_args()
+        if getattr(view, "is_text", False):
+            if not raw:
+                return
+            idx, total = view.text_find(raw, case, regex, +1)
+            self.statusBar().showMessage(
+                f"Match {idx} of {total}" if total else "No matches")
+            return
         if not raw:
             view.clear_matches()
             self.statusBar().showMessage("Empty pattern.")
@@ -2659,6 +2784,11 @@ class MainWindow(QMainWindow):
         raw, scope, case, regex = self._find_args()
         if not raw:
             self.statusBar().showMessage("Empty pattern.")
+            return
+        if getattr(view, "is_text", False):
+            idx, total = view.text_find(raw, case, regex, direction)
+            self.statusBar().showMessage(
+                f"Match {idx} of {total}" if total else "No matches")
             return
         view.step_match(direction, raw, scope, case, regex)
 

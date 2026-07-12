@@ -98,12 +98,14 @@ class DocumentView(QWidget):
         self._table_proxy = None  # RecordFilterProxy over the table
         self.xml_view = None  # QPlainTextEdit, created lazily for XML tabs
         self.diagram = None  # DiagramView (QGraphicsView), created lazily
-        self.text_view = None  # QPlainTextEdit for plain-text (.txt/.js) tabs
+        self.text_view = None  # CodeEditor for plain-text (.txt/.js) tabs
         self.is_text = False   # True when this tab is a plain-text file
+        self._text_highlighter = None  # JsHighlighter for .js tabs
         self._xml_highlighter = None
         self._xml_highlight = False  # syntax highlighting off by default (fast)
         self.filter_text = ""
         self.query_text = ""  # last query run in this tab (for the query bar)
+        self.jq_text = ""     # last jq filter typed in this tab
         self._filter_proxy = None  # NodeFilterProxy while a filter is active
         self._current_visible = None  # active filter's visible-node set
         # Live tail state.
@@ -130,6 +132,7 @@ class DocumentView(QWidget):
         self._last_query = None
         self.filter_text = ""
         self.query_text = ""
+        self.jq_text = ""
         self._current_visible = None
         # Reset tail state (Reload restarts from the current end of file).
         self._tail_timer.stop()
@@ -193,7 +196,7 @@ class DocumentView(QWidget):
         """Open a non-structured file (.txt/.js) as read-only plain text — no
         engine index, tree, search, filter, or structural views. Bypasses the
         native parser entirely (those formats have no structure to index)."""
-        from PySide6.QtWidgets import QPlainTextEdit
+        from openxmljson.codeview import CodeEditor
 
         self.doc = None
         self.model = None
@@ -205,6 +208,7 @@ class DocumentView(QWidget):
         self._last_query = None
         self.filter_text = ""
         self.query_text = ""
+        self.jq_text = ""
         self._current_visible = None
 
         try:
@@ -215,35 +219,115 @@ class DocumentView(QWidget):
             raw = fh.read(TEXT_VIEW_MAX_BYTES + 1)
         truncated = len(raw) > TEXT_VIEW_MAX_BYTES
         text = raw[:TEXT_VIEW_MAX_BYTES].decode("utf-8", errors="replace")
+        # .js opens pre-formatted by default (best-effort; falls back to the raw
+        # source if jsbeautifier isn't available or the file can't be parsed).
+        if path.lower().endswith(".js"):
+            from openxmljson.codeview import beautify_js
+
+            try:
+                text = beautify_js(text)
+            except Exception:  # noqa: BLE001 - formatting is best-effort
+                pass
         if truncated:
             text += (
                 f"\n\n… showing the first {TEXT_VIEW_MAX_BYTES / 1e6:.0f} MB of "
                 f"{size / 1e6:.1f} MB — open the file in an editor to see the rest."
             )
 
+        from PySide6.QtWidgets import QPlainTextEdit
+
         if self.text_view is None:
-            self.text_view = QPlainTextEdit()
+            self.text_view = CodeEditor()
             self.text_view.setReadOnly(True)
             self.text_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
             self.text_view.setFont(self.tree.font())
             self._stack.addWidget(self.text_view)
-        self._style_text_view()
+        self.text_view.set_style(self._style)
         self.text_view.setPlainText(text)
+
+        # Attach (or detach) JavaScript syntax highlighting for .js files.
+        if self._text_highlighter is not None:
+            self._text_highlighter.setDocument(None)
+            self._text_highlighter = None
+        if path.lower().endswith(".js"):
+            from openxmljson.codeview import JsHighlighter
+
+            self._text_highlighter = JsHighlighter(
+                self.text_view.document(), self._style)
+
         self._stack.setCurrentWidget(self.text_view)
         self.info = f"TEXT · {size / 1e6:.1f} MB"
+
+    def text_find(self, raw: str, case: bool, regex: bool,
+                  direction: int = 1):
+        """Plain-text find in the code/text editor (used for .txt/.js tabs).
+        Selects the next/previous match, wrapping around once, and returns
+        ``(current_index, total)`` (1-based; ``(0, 0)`` when there is no match)
+        so the caller can show 'Match X of N'."""
+        if self.text_view is None:
+            return (0, 0)
+        from PySide6.QtCore import QRegularExpression
+        from PySide6.QtGui import QTextCursor, QTextDocument
+
+        base = QTextDocument.FindFlag(0)
+        if case:
+            base |= QTextDocument.FindFlag.FindCaseSensitively
+        nav = base | (QTextDocument.FindFlag.FindBackward if direction < 0
+                      else QTextDocument.FindFlag(0))
+
+        needle = raw
+        if regex:
+            needle = QRegularExpression(raw)
+            if not case:
+                needle.setPatternOptions(
+                    QRegularExpression.PatternOption.CaseInsensitiveOption)
+
+        # Navigate to the next/previous match, wrapping once.
+        found = self.text_view.find(needle, nav)
+        if not found:
+            cursor = self.text_view.textCursor()
+            cursor.movePosition(
+                QTextCursor.MoveOperation.End if direction < 0
+                else QTextCursor.MoveOperation.Start)
+            self.text_view.setTextCursor(cursor)
+            found = self.text_view.find(needle, nav)
+        if not found:
+            return (0, 0)
+
+        # Count all matches (forward scan) and locate the current one.
+        doc = self.text_view.document()
+        starts = []
+        cur = QTextCursor(doc)  # starts at position 0
+        while True:
+            cur = doc.find(needle, cur, base)
+            if cur.isNull():
+                break
+            start = cur.selectionStart()
+            if cur.selectionEnd() == start:  # zero-width match guard
+                cur.setPosition(start + 1)
+                continue
+            starts.append(start)
+            if len(starts) > 500_000:  # sanity cap
+                break
+        here = self.text_view.textCursor().selectionStart()
+        idx = starts.index(here) + 1 if here in starts else 0
+        return (idx, len(starts))
+
+    def can_format_js(self) -> bool:
+        """True for a plain-text tab backed by a .js file (beautify target)."""
+        return (
+            self.is_text
+            and self.text_view is not None
+            and self.path is not None
+            and self.path.lower().endswith(".js")
+        )
 
     def _style_text_view(self) -> None:
         if self.text_view is None:
             return
-        s = self._style
-        self.text_view.setStyleSheet(
-            "QPlainTextEdit {"
-            f" background: {s.view_bg.name()};"
-            f" color: {s.text.name()};"
-            f" selection-background-color: {s.selection_bg.name()};"
-            f" selection-color: {s.text.name()};"
-            " border: none; padding: 4px; }"
-        )
+        self.text_view.set_style(self._style)
+        if self._text_highlighter is not None:
+            self._text_highlighter.set_style(self._style)
 
     def set_style(self, style: Style) -> None:
         self._style = style
@@ -499,6 +583,7 @@ class DocumentView(QWidget):
     def clear_filter(self) -> None:
         self.filter_text = ""
         self.query_text = ""
+        self.jq_text = ""
         self._current_visible = None
         if self._table_proxy is not None:
             self._table_proxy.set_visible(None)

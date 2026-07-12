@@ -1147,6 +1147,8 @@ class MainWindow(QMainWindow):
             tools_menu, "Minify (Compact) → New Tab",
             lambda *_: self.reformat_document(False))
         tools_menu.addSeparator()
+        self._action(tools_menu, "Generate JSON Schema → New Tab",
+                     self.generate_schema)
         self._action(tools_menu, "Validate Against JSON Schema…",
                      self.validate_against_schema)
         self._action(tools_menu, "Compare With Open Tab…",
@@ -2122,6 +2124,29 @@ class MainWindow(QMainWindow):
             f"{'Beautified' if pretty else 'Minified'} {fmt} opened in a new tab.",
             4000,
         )
+
+    def generate_schema(self) -> None:
+        """Tools ▸ Generate JSON Schema — infer a draft-07 schema from the
+        current document and open it in a new tab. Streams over the node index
+        so it stays usable on large documents."""
+        import json
+
+        from openxmljson import schemagen
+
+        view = self.current_view()
+        if view is None or view.doc is None or view.model is None:
+            self.statusBar().showMessage("Open a file first.")
+            return
+        try:
+            with self._busy():
+                schema_doc = schemagen.infer_schema_from_model(view.model)
+        except (RecursionError, MemoryError, ValueError) as exc:
+            QMessageBox.warning(self, "Cannot generate schema", str(exc))
+            return
+        content = json.dumps(schema_doc, indent=2, ensure_ascii=False)
+        self._open_text_as_tab(content, ".json")
+        self.statusBar().showMessage("Generated JSON Schema opened in a new tab.",
+                                     4000)
 
     def validate_against_schema(self) -> None:
         """Tools ▸ Validate — validate the current document against a chosen

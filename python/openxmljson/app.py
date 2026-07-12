@@ -1891,7 +1891,12 @@ class MainWindow(QMainWindow):
             self._xml_button.blockSignals(False)
             self._xml_button_action.setVisible(supported)
         if hasattr(self, "_xml_highlight_action"):
-            self._xml_highlight_action.setEnabled(supported)
+            can_hl = view is not None and view.supports_xml_highlight()
+            self._xml_highlight_action.blockSignals(True)
+            self._xml_highlight_action.setEnabled(can_hl)
+            self._xml_highlight_action.setChecked(
+                can_hl and getattr(view, "_xml_highlight", False))
+            self._xml_highlight_action.blockSignals(False)
 
     def _sync_table_controls(self) -> None:
         """Reflect the current tab's table support/mode in the View ▸ CSV

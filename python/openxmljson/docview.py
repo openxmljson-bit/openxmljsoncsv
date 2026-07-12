@@ -28,6 +28,10 @@ BIG_DOC_NODES = 2_000_000
 #: exists to stop a pathological multi-GB file from flooding memory.
 XML_VIEW_MAX_BYTES = 64 * 1024 * 1024
 
+#: Cap for the plain-text viewer (.txt/.js): read at most this many bytes into
+#: the widget, appending a truncation note beyond it.
+TEXT_VIEW_MAX_BYTES = 32 * 1024 * 1024
+
 #: After a search, expand the tree to reveal up to this many matches.
 REVEAL_MATCH_LIMIT = 500
 
@@ -41,6 +45,11 @@ FILTER_EXPAND_LIMIT = 5_000
 #: node, so it is a small/medium-document feature. Above this node count it is
 #: not offered (a multi-GB file has far too many nodes to draw meaningfully).
 DIAGRAM_MAX_NODES = 50_000
+
+#: XML syntax highlighting runs a QSyntaxHighlighter over the whole markup,
+#: which is expensive on large documents — so (like the diagram) it is offered
+#: only for eager documents under this node count.
+XML_HIGHLIGHT_MAX_NODES = 50_000
 
 
 def _is_lazy(doc) -> bool:
@@ -89,6 +98,8 @@ class DocumentView(QWidget):
         self._table_proxy = None  # RecordFilterProxy over the table
         self.xml_view = None  # QPlainTextEdit, created lazily for XML tabs
         self.diagram = None  # DiagramView (QGraphicsView), created lazily
+        self.text_view = None  # QPlainTextEdit for plain-text (.txt/.js) tabs
+        self.is_text = False   # True when this tab is a plain-text file
         self._xml_highlighter = None
         self._xml_highlight = False  # syntax highlighting off by default (fast)
         self.filter_text = ""
@@ -178,6 +189,62 @@ class DocumentView(QWidget):
 
     # -- settings fan-out -----------------------------------------------------
 
+    def load_text(self, path: str) -> None:
+        """Open a non-structured file (.txt/.js) as read-only plain text — no
+        engine index, tree, search, filter, or structural views. Bypasses the
+        native parser entirely (those formats have no structure to index)."""
+        from PySide6.QtWidgets import QPlainTextEdit
+
+        self.doc = None
+        self.model = None
+        self.path = path
+        self.is_text = True
+        self.eager = False
+        self._match_nodes = []
+        self._match_pos = -1
+        self._last_query = None
+        self.filter_text = ""
+        self.query_text = ""
+        self._current_visible = None
+
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        with open(path, "rb") as fh:
+            raw = fh.read(TEXT_VIEW_MAX_BYTES + 1)
+        truncated = len(raw) > TEXT_VIEW_MAX_BYTES
+        text = raw[:TEXT_VIEW_MAX_BYTES].decode("utf-8", errors="replace")
+        if truncated:
+            text += (
+                f"\n\n… showing the first {TEXT_VIEW_MAX_BYTES / 1e6:.0f} MB of "
+                f"{size / 1e6:.1f} MB — open the file in an editor to see the rest."
+            )
+
+        if self.text_view is None:
+            self.text_view = QPlainTextEdit()
+            self.text_view.setReadOnly(True)
+            self.text_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+            self.text_view.setFont(self.tree.font())
+            self._stack.addWidget(self.text_view)
+        self._style_text_view()
+        self.text_view.setPlainText(text)
+        self._stack.setCurrentWidget(self.text_view)
+        self.info = f"TEXT · {size / 1e6:.1f} MB"
+
+    def _style_text_view(self) -> None:
+        if self.text_view is None:
+            return
+        s = self._style
+        self.text_view.setStyleSheet(
+            "QPlainTextEdit {"
+            f" background: {s.view_bg.name()};"
+            f" color: {s.text.name()};"
+            f" selection-background-color: {s.selection_bg.name()};"
+            f" selection-color: {s.text.name()};"
+            " border: none; padding: 4px; }"
+        )
+
     def set_style(self, style: Style) -> None:
         self._style = style
         self.tree.set_style(style)
@@ -191,6 +258,8 @@ class DocumentView(QWidget):
             self.diagram.apply_style(style)
             if self.diagram_mode():
                 self.set_diagram_view(True)  # re-render with the new palette
+        if self.text_view is not None:
+            self._style_text_view()
 
     def set_font(self, font) -> None:
         self.tree.setFont(font)
@@ -198,6 +267,8 @@ class DocumentView(QWidget):
             self.table.setFont(font)
         if self.xml_view is not None:
             self.xml_view.setFont(font)
+        if self.text_view is not None:
+            self.text_view.setFont(font)
         if self.model is not None:
             self.model.layoutChanged.emit()
         self.tree.doItemsLayout()
@@ -538,9 +609,20 @@ class DocumentView(QWidget):
             )
         return text
 
+    def supports_xml_highlight(self) -> bool:
+        """Highlighting is offered only for eager XML documents under the node
+        cap (it colorizes the whole markup, which is slow on huge files)."""
+        if not self.supports_xml_view() or not self.eager:
+            return False
+        try:
+            return self.doc.node_count() <= XML_HIGHLIGHT_MAX_NODES
+        except Exception:
+            return False
+
     def set_xml_highlight(self, enabled: bool) -> None:
-        """Turn XML syntax highlighting on/off (off = plain text, fast)."""
-        self._xml_highlight = enabled
+        """Turn XML syntax highlighting on/off (off = plain text, fast). Clamped
+        off for large/lazy documents even if the saved preference is on."""
+        self._xml_highlight = enabled and self.supports_xml_highlight()
         self._apply_xml_highlight()
 
     def _apply_xml_highlight(self) -> None:

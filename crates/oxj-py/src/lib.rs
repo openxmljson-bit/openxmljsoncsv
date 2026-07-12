@@ -505,12 +505,62 @@ fn node_kind_names() -> Vec<(u8, &'static str)> {
     NodeKind::ALL.iter().map(|k| (*k as u8, k.name())).collect()
 }
 
+/// Run a jq program (via the jaq engine) over a JSON string, returning each
+/// output value as a compact JSON string. The caller passes small/medium
+/// documents only (the GUI gates by size), since jq materializes its input.
+#[pyfunction]
+fn run_jq(program: &str, input: &str) -> PyResult<Vec<String>> {
+    use jaq_interpret::{Ctx, FilterT, ParseCtx, RcIter, Val};
+
+    let input_val: serde_json::Value = serde_json::from_str(input)
+        .map_err(|e| PyValueError::new_err(format!("invalid JSON input: {e}")))?;
+
+    // Load jaq's native filters + standard library, then parse & compile.
+    let mut defs = ParseCtx::new(Vec::new());
+    defs.insert_natives(jaq_core::core());
+    defs.insert_defs(jaq_std::std());
+
+    let (parsed, errs) = jaq_parse::parse(program, jaq_parse::main());
+    if !errs.is_empty() {
+        let msg = errs
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(PyValueError::new_err(format!("jq parse error: {msg}")));
+    }
+    let parsed = parsed
+        .ok_or_else(|| PyValueError::new_err("empty jq program".to_string()))?;
+    let filter = defs.compile(parsed);
+    if !defs.errs.is_empty() {
+        let msg = defs
+            .errs
+            .iter()
+            .map(|(e, _)| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(PyValueError::new_err(format!("jq compile error: {msg}")));
+    }
+
+    let inputs = RcIter::new(core::iter::empty());
+    let ctx = Ctx::new([], &inputs);
+    let mut out = Vec::new();
+    for result in filter.run((ctx, Val::from(input_val))) {
+        match result {
+            Ok(v) => out.push(serde_json::Value::from(v).to_string()),
+            Err(e) => return Err(PyValueError::new_err(format!("jq error: {e}"))),
+        }
+    }
+    Ok(out)
+}
+
 #[pymodule]
 #[pyo3(name = "_native")]
 fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Document>()?;
     m.add_class::<LazyDocument>()?;
     m.add_function(wrap_pyfunction!(node_kind_names, m)?)?;
+    m.add_function(wrap_pyfunction!(run_jq, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

@@ -489,6 +489,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self._central)
 
         self._build_find_bar()
+        self._build_jq_bar()
         self._build_menus(appearance)
 
         # Permanent widgets (right group, added left-to-right). The load
@@ -915,6 +916,7 @@ class MainWindow(QMainWindow):
         self._sync_table_controls()
         self._sync_xml_controls()
         self._sync_diagram_controls()
+        self._sync_jq_controls()
         self._sync_tools_controls()
         self._sync_scope_combo()
         if view is None or view.path is None:
@@ -1064,6 +1066,33 @@ class MainWindow(QMainWindow):
         self._diagram_button.toggled.connect(self.set_diagram_view)
         self._diagram_button_action = bar.addWidget(self._diagram_button)
         self._diagram_button_action.setVisible(False)
+
+    def _build_jq_bar(self) -> None:
+        """A jq filter bar on its own row below the Find bar. Shown only for
+        small/medium eager documents (see _sync_jq_controls)."""
+        self.addToolBarBreak()
+        bar = QToolBar("jq")
+        bar.setMovable(False)
+        self.addToolBar(bar)
+        self._jq_toolbar = bar
+
+        bar.addWidget(QLabel(" jq "))
+        self.jq_edit = QLineEdit()
+        self.jq_edit.setPlaceholderText("jq filter — e.g. .fruits | map(.name)")
+        self.jq_edit.setClearButtonEnabled(True)
+        self.jq_edit.setMinimumWidth(360)
+        self.jq_edit.setToolTip(
+            "Run a jq filter over the document; the result opens in a new tab.\n"
+            "Press Enter to run. e.g.  .items | sort_by(.price)"
+        )
+        self.jq_edit.returnPressed.connect(self._run_jq_now)
+        bar.addWidget(self.jq_edit)
+
+        jq_button = QPushButton("Run")
+        jq_button.setToolTip("Run the jq filter")
+        jq_button.clicked.connect(self._run_jq_now)
+        bar.addWidget(jq_button)
+        bar.setVisible(False)   # revealed by _sync_jq_controls per document
 
     # -- menus --------------------------------------------------------------------
 
@@ -2124,6 +2153,60 @@ class MainWindow(QMainWindow):
             f"{'Beautified' if pretty else 'Minified'} {fmt} opened in a new tab.",
             4000,
         )
+
+    #: jq reconstructs the whole document, so it's a small/medium-doc feature.
+    JQ_MAX_NODES = 200_000
+
+    def _sync_jq_controls(self) -> None:
+        """Show the jq bar only for eager documents under the node-count cap."""
+        if not hasattr(self, "_jq_toolbar"):
+            return
+        view = self.current_view()
+        ok = view is not None and view.doc is not None and getattr(view, "eager", False)
+        if ok:
+            try:
+                ok = view.doc.node_count() <= self.JQ_MAX_NODES
+            except Exception:
+                ok = False
+        self._jq_toolbar.setVisible(ok)
+
+    def _run_jq_now(self) -> None:
+        """Run the jq bar's filter (via the native jaq engine) over the current
+        document and open the result in a new tab."""
+        import json
+
+        view = self.current_view()
+        if view is None or view.doc is None or view.model is None:
+            self.statusBar().showMessage("Open a file first.")
+            return
+        program = self.jq_edit.text().strip()
+        if not program:
+            return
+        value = self._reconstruct_document(view)
+        if value is None:
+            return
+        try:
+            with self._busy():
+                from openxmljson import _native
+                outputs = _native.run_jq(
+                    program, json.dumps(value, ensure_ascii=False))
+        except AttributeError:
+            QMessageBox.warning(
+                self, "jq unavailable",
+                "This build's native engine has no jq support. Rebuild with "
+                "'maturin develop --release'.")
+            return
+        except ValueError as exc:   # parse / compile / runtime errors from jaq
+            self.statusBar().showMessage(f"jq error: {exc}", 6000)
+            return
+        if not outputs:
+            self.statusBar().showMessage("jq produced no output.", 4000)
+            return
+        # One value → .json; multiple → newline-delimited JSON (.ndjson).
+        suffix = ".json" if len(outputs) == 1 else ".ndjson"
+        self._open_text_as_tab("\n".join(outputs), suffix)
+        self.statusBar().showMessage(
+            f"jq produced {len(outputs)} result(s) in a new tab.", 4000)
 
     def generate_schema(self) -> None:
         """Tools ▸ Generate JSON Schema — infer a draft-07 schema from the

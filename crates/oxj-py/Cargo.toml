@@ -16,3 +16,12 @@ oxj-core = { path = "../oxj-core" }
 # links a test-friendly cdylib on machines with a Python dev environment.
 pyo3 = { version = "0.21", features = ["abi3-py39"] }
 regex = "1.10"
+# jq engine (jaq = Rust jq clone). Compiled into the native module, so no
+# extra runtime libraries need bundling. Pinned to the 1.x line whose library
+# API (ParseCtx / Val <-> serde_json) is stable and documented; if a build
+# error appears, check the exact API on docs.rs for the resolved versions.
+jaq-interpret = "1.5"
+jaq-parse = "1.0"
+jaq-core = "1.5"
+jaq-std = "1.5"
+serde_json = "1"

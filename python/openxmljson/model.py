@@ -195,16 +195,20 @@ class DocumentModel(QAbstractItemModel):
                 segs.append((_classify_value(value), value))
             elif rest.startswith(" {"):
                 segs.append(("punct", " : "))
-                segs.append(("placeholder", "{...}"))
+                segs.append(("placeholder",
+                             "{}" if self._doc.child_count(node) == 0 else "{...}"))
             elif rest.startswith(" ["):
                 segs.append(("punct", " : "))
-                segs.append(("placeholder", "[...]"))
+                segs.append(("placeholder",
+                             "[]" if self._doc.child_count(node) == 0 else "[...]"))
             elif rest:
                 segs.append(("punct", rest))
         elif kind == OBJECT:
-            segs.append(("placeholder", "{...}"))
+            segs.append(("placeholder",
+                         "{}" if self._doc.child_count(node) == 0 else "{...}"))
         elif kind == ARRAY:
-            segs.append(("placeholder", "[...]"))
+            segs.append(("placeholder",
+                         "[]" if self._doc.child_count(node) == 0 else "[...]"))
         elif kind in _SCALARS:
             text = self._doc.display_text(node)
             segs.append((_classify_value(text), text))
@@ -299,7 +303,7 @@ class DocumentModel(QAbstractItemModel):
             last_role, last_text = segs[-1]
             if last_role == "placeholder":
                 kids = self._doc.child_nodes(node)
-                if last_text == "{...}":
+                if last_text.startswith("{"):   # "{...}" or empty "{}"
                     return {
                         self._key_name(k): self._reconstruct(k) for k in kids
                     }
@@ -396,7 +400,7 @@ class DocumentModel(QAbstractItemModel):
                 shape = next(
                     (t for r, t in segs if r == "placeholder"), "{...}"
                 )
-                base = "Object" if shape == "{...}" else "Array"
+                base = "Object" if shape.startswith("{") else "Array"
                 return f"{base} · {suffix}"
             segs = self.segments(node)
             role = segs[-1][0] if segs else "punct"
@@ -524,9 +528,9 @@ class DocumentModel(QAbstractItemModel):
         placeholder = next(
             (text for role, text in segs if role == "placeholder"), None
         )
-        if placeholder == "{...}":
+        if placeholder and placeholder.startswith("{"):
             noun = "key" if count == 1 else "keys"
-        elif placeholder == "[...]":
+        elif placeholder and placeholder.startswith("["):
             noun = "item" if count == 1 else "items"
         else:
             return None

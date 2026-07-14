@@ -32,6 +32,10 @@ XML_VIEW_MAX_BYTES = 64 * 1024 * 1024
 #: the widget, appending a truncation note beyond it.
 TEXT_VIEW_MAX_BYTES = 32 * 1024 * 1024
 
+#: Cap the rows scanned by the CSV/TSV table Find so it stays responsive on
+#: huge files (matches beyond this row are not found in table view).
+TABLE_FIND_MAX_ROWS = 50_000
+
 #: After a search, expand the tree to reveal up to this many matches.
 REVEAL_MATCH_LIMIT = 500
 
@@ -47,9 +51,9 @@ FILTER_EXPAND_LIMIT = 5_000
 DIAGRAM_MAX_NODES = 50_000
 
 #: XML syntax highlighting runs a QSyntaxHighlighter over the whole markup,
-#: which is expensive on large documents — so (like the diagram) it is offered
-#: only for eager documents under this node count.
-XML_HIGHLIGHT_MAX_NODES = 50_000
+#: whose cost tracks the source text length — so it is gated by file size
+#: (offered only for eager XML documents at or under this many bytes).
+XML_HIGHLIGHT_MAX_BYTES = 50 * 1024 * 1024
 
 
 def _is_lazy(doc) -> bool:
@@ -102,7 +106,8 @@ class DocumentView(QWidget):
         self.is_text = False   # True when this tab is a plain-text file
         self._text_highlighter = None  # JsHighlighter for .js tabs
         self._xml_highlighter = None
-        self._xml_highlight = False  # syntax highlighting off by default (fast)
+        self._xml_highlight = False       # effective state (gated by doc)
+        self._xml_highlight_pref = False  # user preference, re-clamped on load
         self.filter_text = ""
         self.query_text = ""  # last query run in this tab (for the query bar)
         self.jq_text = ""     # last jq filter typed in this tab
@@ -190,6 +195,12 @@ class DocumentView(QWidget):
         # All formats — including CSV/TSV — open in the tree view. The
         # spreadsheet table is available on demand via View ▸ CSV Table View.
 
+        # Re-evaluate the highlight preference now the document is bound, so the
+        # size/format gate is checked against the real doc (the view was created
+        # — and the preference first set — before load(), when doc was None).
+        self._xml_highlight = (
+            self._xml_highlight_pref and self.supports_xml_highlight())
+
     # -- settings fan-out -----------------------------------------------------
 
     def load_text(self, path: str) -> None:
@@ -258,13 +269,25 @@ class DocumentView(QWidget):
         self._stack.setCurrentWidget(self.text_view)
         self.info = f"TEXT · {size / 1e6:.1f} MB"
 
+    def _active_text_editor(self):
+        """The QPlainTextEdit that Find should search, if any: the plain-text
+        editor for .txt/.js tabs, or the XML source view when it is showing."""
+        if self.is_text and self.text_view is not None:
+            return self.text_view
+        if self.xml_view is not None and self.xml_view_mode():
+            return self.xml_view
+        return None
+
+    def has_text_find(self) -> bool:
+        return self._active_text_editor() is not None
+
     def text_find(self, raw: str, case: bool, regex: bool,
                   direction: int = 1):
-        """Plain-text find in the code/text editor (used for .txt/.js tabs).
-        Selects the next/previous match, wrapping around once, and returns
-        ``(current_index, total)`` (1-based; ``(0, 0)`` when there is no match)
-        so the caller can show 'Match X of N'."""
-        if self.text_view is None:
+        """Plain-text find in the active text editor (.txt/.js tab or the XML
+        source view). Selects the next/previous match, wrapping around once, and
+        returns ``(current_index, total)`` (1-based; ``(0, 0)`` if no match)."""
+        editor = self._active_text_editor()
+        if editor is None:
             return (0, 0)
         from PySide6.QtCore import QRegularExpression
         from PySide6.QtGui import QTextCursor, QTextDocument
@@ -282,36 +305,88 @@ class DocumentView(QWidget):
                 needle.setPatternOptions(
                     QRegularExpression.PatternOption.CaseInsensitiveOption)
 
-        # Navigate to the next/previous match, wrapping once.
-        found = self.text_view.find(needle, nav)
+        found = editor.find(needle, nav)
         if not found:
-            cursor = self.text_view.textCursor()
+            cursor = editor.textCursor()
             cursor.movePosition(
                 QTextCursor.MoveOperation.End if direction < 0
                 else QTextCursor.MoveOperation.Start)
-            self.text_view.setTextCursor(cursor)
-            found = self.text_view.find(needle, nav)
+            editor.setTextCursor(cursor)
+            found = editor.find(needle, nav)
         if not found:
             return (0, 0)
 
         # Count all matches (forward scan) and locate the current one.
-        doc = self.text_view.document()
+        doc = editor.document()
         starts = []
-        cur = QTextCursor(doc)  # starts at position 0
+        cur = QTextCursor(doc)
         while True:
             cur = doc.find(needle, cur, base)
             if cur.isNull():
                 break
             start = cur.selectionStart()
-            if cur.selectionEnd() == start:  # zero-width match guard
+            if cur.selectionEnd() == start:  # zero-width guard
                 cur.setPosition(start + 1)
                 continue
             starts.append(start)
-            if len(starts) > 500_000:  # sanity cap
+            if len(starts) > 500_000:
                 break
-        here = self.text_view.textCursor().selectionStart()
+        here = editor.textCursor().selectionStart()
         idx = starts.index(here) + 1 if here in starts else 0
         return (idx, len(starts))
+
+    def table_find(self, raw: str, case: bool, regex: bool,
+                   direction: int = 1):
+        """Find in the CSV/TSV table view: select the next/previous cell whose
+        text matches, wrapping around. Returns ``(current_index, total)``.
+        Scans up to TABLE_FIND_MAX_ROWS rows to stay bounded on huge files."""
+        if self.table is None or not self.table_mode():
+            return (0, 0)
+        model = self.table.model()
+        if model is None:
+            return (0, 0)
+        rows = min(model.rowCount(), TABLE_FIND_MAX_ROWS)
+        cols = model.columnCount()
+        if rows == 0 or cols == 0:
+            return (0, 0)
+
+        if regex:
+            try:
+                rx = re.compile(raw, 0 if case else re.IGNORECASE)
+            except re.error:
+                return (0, 0)
+            def hit(s):
+                return rx.search(s) is not None
+        else:
+            needle = raw if case else raw.lower()
+            def hit(s):
+                return needle in (s if case else s.lower())
+
+        from PySide6.QtCore import Qt
+        role = Qt.ItemDataRole.DisplayRole
+        matches = []
+        for r in range(rows):
+            for c in range(cols):
+                s = str(model.data(model.index(r, c), role) or "")
+                if hit(s):
+                    matches.append((r, c))
+        if not matches:
+            return (0, 0)
+
+        def key(rc):
+            return rc[0] * cols + rc[1]
+
+        cur = self.table.currentIndex()
+        cur_key = key((cur.row(), cur.column())) if cur.isValid() else -1
+        if direction >= 0:
+            nxt = next((m for m in matches if key(m) > cur_key), matches[0])
+        else:
+            earlier = [m for m in matches if key(m) < cur_key]
+            nxt = earlier[-1] if earlier else matches[-1]
+        target = model.index(nxt[0], nxt[1])
+        self.table.setCurrentIndex(target)
+        self.table.scrollTo(target)
+        return (matches.index(nxt) + 1, len(matches))
 
     def can_format_js(self) -> bool:
         """True for a plain-text tab backed by a .js file (beautify target)."""
@@ -695,18 +770,19 @@ class DocumentView(QWidget):
         return text
 
     def supports_xml_highlight(self) -> bool:
-        """Highlighting is offered only for eager XML documents under the node
-        cap (it colorizes the whole markup, which is slow on huge files)."""
+        """Highlighting is offered only for eager XML documents at or under the
+        byte cap (it colorizes the whole markup, which is slow on huge files)."""
         if not self.supports_xml_view() or not self.eager:
             return False
         try:
-            return self.doc.node_count() <= XML_HIGHLIGHT_MAX_NODES
+            return self.doc.file_bytes() <= XML_HIGHLIGHT_MAX_BYTES
         except Exception:
             return False
 
     def set_xml_highlight(self, enabled: bool) -> None:
-        """Turn XML syntax highlighting on/off (off = plain text, fast). Clamped
-        off for large/lazy documents even if the saved preference is on."""
+        """Turn XML syntax highlighting on/off (off = plain text, fast). Records
+        the preference and applies it, clamped off for large/lazy documents."""
+        self._xml_highlight_pref = enabled
         self._xml_highlight = enabled and self.supports_xml_highlight()
         self._apply_xml_highlight()
 

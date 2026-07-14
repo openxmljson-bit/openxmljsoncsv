@@ -10,7 +10,16 @@ from __future__ import annotations
 import io
 import json
 import re
+from datetime import datetime
 from typing import Any, List
+
+
+def timestamped_name(base: str, ext: str) -> str:
+    """Default save-dialog filename with a timestamp, e.g. ``matches_20260712_
+    143005.json``. ``ext`` may be given with or without a leading dot."""
+    ext = ext.lstrip(".")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{base}_{stamp}.{ext}" if ext else f"{base}_{stamp}"
 
 
 def to_pretty_json(value: Any) -> str:

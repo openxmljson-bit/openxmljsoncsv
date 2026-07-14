@@ -613,10 +613,12 @@ class DocumentTreeView(QTreeView):
         index, model = self._source_model(index)
         node = model.node_id(index)
         suffix = {"json": "json", "xml": "xml", "csv": "csv", "text": "txt"}[mode]
+        from openxmljson.convert import timestamped_name
+
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Export value",
-            f"value.{suffix}",
+            timestamped_name("value", suffix),
             f"{suffix.upper()} files (*.{suffix});;All files (*)",
         )
         if not path:

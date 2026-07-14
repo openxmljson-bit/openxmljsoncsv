@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QGraphicsSimpleTextItem,
     QGraphicsView,
     QHBoxLayout,
+    QLabel,
     QMenu,
     QToolButton,
     QVBoxLayout,
@@ -90,12 +91,17 @@ class _Canvas(QGraphicsView):
         p.end()
         self.setBackgroundBrush(QBrush(pm))
 
+    def _notify_zoom(self) -> None:
+        if self.owner is not None:
+            self.owner._update_zoom_label()
+
     def wheelEvent(self, event):  # noqa: N802
         # Ctrl + wheel zooms (for mouse users); plain two-finger scroll pans.
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
             self.scale(factor, factor)
             self._smart_on = False
+            self._notify_zoom()
             event.accept()
             return
         delta = event.pixelDelta()
@@ -117,6 +123,7 @@ class _Canvas(QGraphicsView):
                 if factor > 0:
                     self.scale(factor, factor)
                     self._smart_on = False
+                    self._notify_zoom()
                 return True
             if gtype == Qt.NativeGestureType.SmartZoomNativeGesture:
                 self._smart_zoom(e)
@@ -133,6 +140,7 @@ class _Canvas(QGraphicsView):
             self.scale(2.2, 2.2)
             self.centerOn(scene_pt)
             self._smart_on = True
+        self._notify_zoom()
 
 
 class DiagramView(QWidget):
@@ -150,8 +158,19 @@ class DiagramView(QWidget):
         self._fm_bold = QFontMetricsF(self._bold)
         self._c = _dark_palette()
         self._graph: Graph = None
-        self._orient = "LR"
+        self._orient = "TB"        # default: top-to-bottom
+        self._root_top_center = None   # scene point of the root card's top edge
         self._toolbar = self._build_toolbar()
+
+        # Live zoom-% readout, top-right, updated on every transform.
+        self._zoom_label = QLabel("100%", self)
+        self._zoom_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._zoom_label.setStyleSheet(
+            "QLabel { background: rgba(28,28,34,0.92); color: #d5d5db;"
+            " border: 1px solid rgba(255,255,255,0.10); border-radius: 10px;"
+            " padding: 4px 10px; font-weight: 500; }"
+        )
+        self._zoom_label.adjustSize()
 
     # -- theming ---------------------------------------------------------------
 
@@ -167,30 +186,53 @@ class DiagramView(QWidget):
 
     def set_graph(self, graph: Graph) -> None:
         self._graph = graph
-        self._orient = "LR"
+        self._orient = "TB"
         self._render()
 
     def fit(self) -> None:
         rect = self._scene.itemsBoundingRect()
-        vw = self._view.viewport().width()
-        vh = self._view.viewport().height()
-        if rect.isEmpty() or vw <= 1:
+        if rect.isEmpty() or self._view.viewport().width() <= 1:
             return
-        # Scale to fit, with a little padding so nothing touches the edges.
+        # Fit the whole graph centered, with a little padding so nothing touches
+        # the viewport edges.
         pad = max(rect.width(), rect.height()) * 0.06
-        padded = rect.adjusted(-pad, -pad, pad, pad)
-        s = min(vw / padded.width(), vh / padded.height())
+        rect = rect.adjusted(-pad, -pad, pad, pad)
         self._view.resetTransform()
-        self._view.scale(s, s)
-        # Left-align with a 10% margin (the root card sits ~10% from the left),
-        # vertically centered — rather than centering the whole graph.
-        left_frac = 0.10
-        cx = rect.left() + (0.5 * vw - left_frac * vw) / s
-        cy = rect.center().y()
-        self._view.centerOn(cx, cy)
+        self._view.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+        self._update_zoom_label()
 
     def zoom(self, factor: float) -> None:
         self._view.scale(factor, factor)
+        self._update_zoom_label()
+
+    def set_zoom(self, percent: float) -> None:
+        """Set an absolute zoom level (100 = 1:1), anchoring the first (root)
+        node near the top-center of the viewport so content stays in view."""
+        s = percent / 100.0
+        self._view.resetTransform()
+        self._view.scale(s, s)
+        if self._root_top_center is not None:
+            vh = self._view.viewport().height()
+            top_margin = 40  # px below the top edge
+            # Put the root's top-center at (viewport center x, top_margin) by
+            # choosing the scene point that should sit at the viewport center.
+            cx = self._root_top_center.x()
+            cy = self._root_top_center.y() + (vh / 2 - top_margin) / s
+            self._view.centerOn(cx, cy)
+        else:
+            center = self._view.mapToScene(self._view.viewport().rect().center())
+            self._view.centerOn(center)
+        self._update_zoom_label()
+
+    def _update_zoom_label(self) -> None:
+        pct = round(self._view.transform().m11() * 100)
+        self._zoom_label.setText(f"{pct}%")
+        self._zoom_label.adjustSize()
+        self._place_zoom_label()
+
+    def _place_zoom_label(self) -> None:
+        self._zoom_label.move(max(0, self.width() - self._zoom_label.width() - 12), 12)
+        self._zoom_label.raise_()
 
     def rotate_layout(self) -> None:
         """Cycle layout direction LR → TB → RL → BT (jsoncrack's rotate)."""
@@ -202,12 +244,14 @@ class DiagramView(QWidget):
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
         self._place_toolbar()
+        self._place_zoom_label()
         if self._graph is not None and self._graph.nodes:
             QTimer.singleShot(0, self.fit)
 
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
         self._place_toolbar()
+        self._place_zoom_label()
 
     # -- rendering -------------------------------------------------------------
 
@@ -221,6 +265,13 @@ class DiagramView(QWidget):
                  for n in graph.nodes}
         depths = self._depths(graph)
         positions = self._layout(graph, depths, sizes)
+
+        # Remember the root card's top-center (scene coords) so zoom presets can
+        # keep the first node anchored near the top of the viewport.
+        root_id = graph.nodes[0].id
+        rx, ry = positions[root_id]
+        rw, _rh = sizes[root_id]
+        self._root_top_center = QPointF(rx + rw / 2, ry)
 
         node_by_id = {n.id: n for n in graph.nodes}
         for parent, child, _label, _row in graph.edges:
@@ -518,6 +569,13 @@ class DiagramView(QWidget):
         btn("−", "Zoom out", lambda: self.zoom(1 / 1.2))
         btn("+", "Zoom in", lambda: self.zoom(1.2))
 
+        self._zoom_btn = QToolButton(bar)
+        self._zoom_btn.setText("⌕")
+        self._zoom_btn.setToolTip("Zoom to preset")
+        self._zoom_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._zoom_btn.clicked.connect(self._show_zoom_menu)
+        row.addWidget(self._zoom_btn)
+
         self._export_btn = QToolButton(bar)
         self._export_btn.setText("⇩")
         self._export_btn.setToolTip("Export image")
@@ -528,6 +586,14 @@ class DiagramView(QWidget):
         btn("⟳", "Rotate layout direction", self.rotate_layout)
         bar.adjustSize()
         return bar
+
+    def _show_zoom_menu(self) -> None:
+        menu = QMenu(self)
+        for pct in (100, 150, 200):
+            menu.addAction(f"{pct}%", lambda _=False, p=pct: self.set_zoom(p))
+        size = menu.sizeHint()
+        gp = self._zoom_btn.mapToGlobal(QPoint(0, 0))
+        menu.exec(QPoint(gp.x(), gp.y() - size.height() - 6))  # open above
 
     def _show_export_menu(self) -> None:
         menu = QMenu(self)

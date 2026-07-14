@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 
 from openxmljson import Document, LazyDocument, NATIVE_AVAILABLE
 from openxmljson.activity import ActivityLights
+from openxmljson.convert import timestamped_name
 from openxmljson.docview import DocumentView
 from openxmljson.styles import WATERMARK_TEXT, resolve, stylesheet
 from openxmljson.tree import EXPAND_ALL_CONFIRM_NODES, EXPAND_ALL_MAX_NODES
@@ -566,7 +567,7 @@ class MainWindow(QMainWindow):
         view.node_badge.connect(self._type_label.setText)
         view.activity_pulse.connect(self._lights.pulse)
         view.set_xml_highlight(
-            str(self._settings.value("xml_highlight", "false")).lower() == "true"
+            str(self._settings.value("xml_highlight", "true")).lower() == "true"
         )
         return view
 
@@ -925,6 +926,7 @@ class MainWindow(QMainWindow):
             self._jsfmt_action.setEnabled(view is not None and view.can_format_js())
         self._sync_tools_controls()
         self._sync_scope_combo()
+        self._sync_match_export_controls()
         # Hide the whole Find bar when no document is open (welcome screen).
         if hasattr(self, "_find_bar"):
             self._find_bar.setVisible(view is not None)
@@ -1146,20 +1148,6 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         self._action(file_menu, "Reload", self.reload_file, "F5")
         file_menu.addSeparator()
-        export_menu = file_menu.addMenu("Export Data As")
-        self._action(export_menu, "Raw Copy…", self.export_raw_copy)
-        self._action(export_menu, "Pretty JSON…", self.export_pretty_json)
-        self._action(export_menu, "XML…", lambda: self.export_converted("xml"))
-        self._action(export_menu, "CSV…", lambda: self.export_converted("csv"))
-        export_menu.addSeparator()
-        self._action(export_menu, "Search Matches as JSON…",
-                     lambda: self.export_matches("json"))
-        self._action(export_menu, "Search Matches as CSV…",
-                     lambda: self.export_matches("csv"))
-        sel_menu = file_menu.addMenu("Export Selection As")
-        self._action(sel_menu, "JSON…", lambda: self._export_selection(True))
-        self._action(sel_menu, "Text…", lambda: self._export_selection(False))
-        file_menu.addSeparator()
         self._action(file_menu, "Duplicate Tab", self.duplicate_current_tab,
                      "Ctrl+Shift+D")
         self._action(file_menu, "Close Tab", self.close_current_tab,
@@ -1180,6 +1168,29 @@ class MainWindow(QMainWindow):
         self._action(edit_menu, "Copy Row", self.copy_row,
                      QKeySequence.StandardKey.Copy)
         self._action(edit_menu, "Copy as cURL", self.copy_as_curl)
+
+        # Export -------------------------------------------------------------
+        export_menu = menubar.addMenu("E&xport")
+        self._action(export_menu, "Raw Copy…", self.export_raw_copy)
+        self._action(export_menu, "Pretty JSON…", self.export_pretty_json)
+        self._action(export_menu, "XML…", lambda: self.export_converted("xml"))
+        self._action(export_menu, "CSV…", lambda: self.export_converted("csv"))
+        export_menu.addSeparator()
+        self._action(export_menu, "Selection as JSON…",
+                     lambda: self._export_selection(True))
+        self._action(export_menu, "Selection as Text…",
+                     lambda: self._export_selection(False))
+        export_menu.addSeparator()
+        # Search-match export — enabled only while a search has results
+        # (see _sync_match_export_controls).
+        self._match_json_action = self._action(
+            export_menu, "Search Matches as JSON…",
+            lambda: self.export_matches("json"))
+        self._match_csv_action = self._action(
+            export_menu, "Search Matches as CSV…",
+            lambda: self.export_matches("csv"))
+        self._match_json_action.setEnabled(False)
+        self._match_csv_action.setEnabled(False)
 
         # Bookmarks -----------------------------------------------------------
         self._bookmarks_menu = menubar.addMenu("&Bookmarks")
@@ -1242,7 +1253,7 @@ class MainWindow(QMainWindow):
         self._xml_highlight_action = QAction(
             "XML Syntax Highlighting", self, checkable=True)
         self._xml_highlight_action.setChecked(
-            str(self._settings.value("xml_highlight", "false")).lower() == "true"
+            str(self._settings.value("xml_highlight", "true")).lower() == "true"
         )
         self._xml_highlight_action.setEnabled(False)
         self._xml_highlight_action.toggled.connect(self.set_xml_highlight)
@@ -1874,7 +1885,7 @@ class MainWindow(QMainWindow):
             return
         suffix = os.path.splitext(view.path)[1] or ".txt"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export raw copy", f"export{suffix}"
+            self, "Export raw copy", timestamped_name("raw", suffix)
         )
         if not path:
             return
@@ -1899,7 +1910,8 @@ class MainWindow(QMainWindow):
             )
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export pretty JSON", "export.json", "JSON files (*.json)"
+            self, "Export pretty JSON", timestamped_name("pretty", "json"),
+            "JSON files (*.json)"
         )
         if not path:
             return
@@ -2100,7 +2112,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self,
             f"Export as {target.upper()}",
-            f"export.{target}",
+            timestamped_name("data", target),
             f"{target.upper()} files (*.{target})",
         )
         if not path:
@@ -2159,7 +2171,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Export search matches",
-            f"matches.{target}",
+            timestamped_name("matches", target),
             f"{target.upper()} files (*.{target})",
         )
         if not path:
@@ -2482,7 +2494,7 @@ class MainWindow(QMainWindow):
 
         def _save():
             p, _ = QFileDialog.getSaveFileName(
-                dialog, "Save report", "report.txt",
+                dialog, "Save report", timestamped_name("report", "txt"),
                 "Text files (*.txt);;All files (*)",
             )
             if p:
@@ -2744,11 +2756,21 @@ class MainWindow(QMainWindow):
             self.regex_button.isChecked(),
         )
 
+    def _sync_match_export_controls(self) -> None:
+        """Enable 'Export Search Matches…' only while a search has results."""
+        view = self.current_view()
+        has = view is not None and bool(view.match_nodes())
+        for act in (getattr(self, "_match_json_action", None),
+                    getattr(self, "_match_csv_action", None)):
+            if act is not None:
+                act.setEnabled(has)
+
     def _on_search_text_changed(self, text: str) -> None:
         view = self.current_view()
         if not text and view is not None:
             view.clear_matches()
             self.statusBar().clearMessage()
+            self._sync_match_export_controls()
 
     def run_search(self) -> None:
         view = self.current_view()
@@ -2756,19 +2778,28 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Open a file first.")
             return
         raw, scope, case, regex = self._find_args()
-        if getattr(view, "is_text", False):
+        if view.has_text_find():           # .txt/.js tab or XML source view
             if not raw:
                 return
             idx, total = view.text_find(raw, case, regex, +1)
             self.statusBar().showMessage(
                 f"Match {idx} of {total}" if total else "No matches")
             return
+        if view.table_mode():              # CSV/TSV table view
+            if not raw:
+                return
+            idx, total = view.table_find(raw, case, regex, +1)
+            self.statusBar().showMessage(
+                f"Match {idx} of {total}" if total else "No matches")
+            return
         if not raw:
             view.clear_matches()
             self.statusBar().showMessage("Empty pattern.")
+            self._sync_match_export_controls()
             return
         with self._busy():
             view.run_search(raw, scope, case, regex)
+        self._sync_match_export_controls()
 
     def find_next(self) -> None:
         self._step(+1)
@@ -2785,12 +2816,18 @@ class MainWindow(QMainWindow):
         if not raw:
             self.statusBar().showMessage("Empty pattern.")
             return
-        if getattr(view, "is_text", False):
+        if view.has_text_find():
             idx, total = view.text_find(raw, case, regex, direction)
             self.statusBar().showMessage(
                 f"Match {idx} of {total}" if total else "No matches")
             return
+        if view.table_mode():
+            idx, total = view.table_find(raw, case, regex, direction)
+            self.statusBar().showMessage(
+                f"Match {idx} of {total}" if total else "No matches")
+            return
         view.step_match(direction, raw, scope, case, regex)
+        self._sync_match_export_controls()
 
 
 def _set_macos_process_name() -> None:

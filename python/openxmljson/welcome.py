@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import QPointF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -399,11 +399,30 @@ class WelcomeWidget(QWidget):
             target -= d
         return points[-1]
 
+    def _draw_watermark(self, painter: QPainter) -> None:
+        """Big, bold, semi-transparent 'NARIK' in the bottom-right corner —
+        subtle and theme-aware (light on dark, dark on light)."""
+        text = "NARIK"
+        font = QFont(self.font())
+        font.setBold(True)
+        font.setPixelSize(max(40, int(self.height() * 0.16)))
+        painter.setFont(font)
+        fm = QFontMetrics(font)
+        margin = 28
+        x = self.width() - fm.horizontalAdvance(text) - margin
+        y = self.height() - margin  # text baseline
+        color = QColor(self._style.text)
+        color.setAlpha(30)          # transparent grey
+        painter.setPen(color)
+        painter.drawText(max(margin, x), y, text)
+
     def paintEvent(self, event) -> None:  # noqa: N802
-        if not self._paths:
-            return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        self._draw_watermark(painter)
+        if not self._paths:
+            painter.end()
+            return
         line = QColor(self._style.guide)
         pulse = QColor(self._style.placeholder)
         pen = QPen(line, 1.4)

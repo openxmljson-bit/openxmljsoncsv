@@ -1505,7 +1505,18 @@ class MainWindow(QMainWindow):
         if err is not None:
             if self._restore_current_path == path:
                 self._restore_current_path = None
-            QMessageBox.critical(self, "Cannot open file", str(err))
+            # The file couldn't be parsed (e.g. malformed JSON/XML). Fall back
+            # to the plain-text viewer so the user can still see/fix it. If the
+            # file also can't be read as text, _open_text_view shows its own
+            # error and adds no tab — so only announce the fallback when a tab
+            # was actually created.
+            before = self.tabs.count()
+            self._open_text_view(path)
+            if self.tabs.count() > before:
+                QMessageBox.information(
+                    self, "Opened as plain text",
+                    f"This file couldn't be parsed:\n\n{err}\n\n"
+                    "Opened it in the text viewer instead.")
             return
         view = self._new_view()
         # Apply any URL association stashed by open_url before the async open,

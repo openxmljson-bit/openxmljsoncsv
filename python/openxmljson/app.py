@@ -19,7 +19,7 @@ import tempfile
 import urllib.request
 
 from PySide6.QtCore import (
-    QEvent, QObject, QRunnable, QSettings, Qt, QThreadPool, Signal,
+    QEvent, QObject, QRunnable, QSettings, Qt, QThreadPool, QTimer, Signal,
 )
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
@@ -210,6 +210,24 @@ LAZY_EAGER_FRACTION = 0.35           # eager only if file <= 35% RAM (~70% at 2x
 #: Fraction of RAM above which the "large file may exhaust memory" warning
 #: fires (only reachable when lazy mode is forced off for an oversized file).
 LAZY_AUTO_FRACTION = 0.70
+
+
+class _UpdateSignals(QObject):
+    #: (release-info-dict-or-None, manual) delivered on the GUI thread.
+    done = Signal(object, bool)
+
+
+class _UpdateTask(QRunnable):
+    """Fetch the latest GitHub release off the GUI thread."""
+
+    def __init__(self, signals: "_UpdateSignals", manual: bool):
+        super().__init__()
+        self._signals = signals
+        self._manual = manual
+
+    def run(self) -> None:
+        from openxmljson.update import fetch_latest_release
+        self._signals.done.emit(fetch_latest_release(), self._manual)
 
 
 class _OpenSignals(QObject):
@@ -1321,6 +1339,8 @@ class MainWindow(QMainWindow):
         # throwaway menu in _suppress_macos_help_search() at startup.
         help_menu = menubar.addMenu("&Help")
         self._action(help_menu, "Features", self.show_features, "F1")
+        self._action(help_menu, "Check for Updates…",
+                     lambda: self.check_for_updates(manual=True))
         help_menu.addSeparator()
         self._action(help_menu, "About OPENXMLJSON", self.show_about)
 
@@ -2749,11 +2769,79 @@ class MainWindow(QMainWindow):
         layout.addWidget(scroll)
         dialog.exec()
 
+    def check_for_updates(self, manual: bool) -> None:
+        """Check GitHub Releases for a newer version (off the GUI thread).
+        ``manual`` = user-initiated (show 'up to date'/errors); otherwise quiet
+        (only notify when an update exists)."""
+        from datetime import datetime
+
+        self._settings.setValue("update/last_check", datetime.now().isoformat())
+        signals = _UpdateSignals()
+        signals.done.connect(self._on_update_result)
+        self._update_signals = getattr(self, "_update_signals", [])
+        self._update_signals.append(signals)  # keep alive until delivered
+        if manual:
+            self.statusBar().showMessage("Checking for updates…")
+        QThreadPool.globalInstance().start(_UpdateTask(signals, manual))
+
+    def _on_update_result(self, info, manual: bool) -> None:
+        from openxmljson import __version__, update
+
+        sender = self.sender()
+        if hasattr(self, "_update_signals"):
+            self._update_signals = [s for s in self._update_signals
+                                    if s is not sender]
+        if info is None:
+            if manual:
+                QMessageBox.warning(
+                    self, "Update check failed",
+                    "Couldn't check for updates right now. Please try again "
+                    "later.")
+            return
+        if update.is_newer(info["tag"], __version__):
+            box = QMessageBox(self)
+            box.setWindowTitle("Update available")
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setText(
+                f"A new version ({info['tag']}) is available.\n"
+                f"You're on {__version__}.")
+            download = box.addButton("Download…",
+                                     QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is download:
+                import webbrowser
+                # Grab the platform asset (.dmg/.exe) directly; fall back to the
+                # release page if there's no matching asset.
+                asset = update.pick_asset(info.get("assets", []))
+                webbrowser.open(asset or info["url"])
+        elif manual:
+            QMessageBox.information(
+                self, "Up to date",
+                f"You're on the latest version ({__version__}).")
+
+    def _maybe_startup_update_check(self) -> None:
+        """Quiet update check at launch, at most once a day."""
+        from datetime import datetime, timedelta
+
+        last = self._settings.value("update/last_check", "")
+        due = True
+        if last:
+            try:
+                due = datetime.now() - datetime.fromisoformat(str(last)) > \
+                    timedelta(days=1)
+            except ValueError:
+                due = True
+        if due:
+            QTimer.singleShot(1500, lambda: self.check_for_updates(manual=False))
+
     def show_about(self) -> None:
+        from openxmljson import __version__
+
         QMessageBox.about(
             self,
             "About OPENXMLJSON",
-            "OPENXMLJSON 0.1.0\n\n"
+            f"OPENXMLJSON {__version__}\n\n"
             "Viewer for very large JSON / XML / CSV files, built on a "
             "zero-copy memory-mapped structural index.\n\n"
             "Author: Kiran Peddikuppa",
@@ -2933,4 +3021,5 @@ def run(argv=None) -> int:
     app.set_window(window)
     if not had_argv_files and window.tabs.count() == 0:
         window.restore_session()
+    window._maybe_startup_update_check()
     return app.exec()

@@ -15,8 +15,11 @@ import sys
 import urllib.request
 from typing import List, Optional
 
-#: owner/repo the releases are published under.
-GITHUB_REPO = "openxmljson-bit/openxmljsoncsv"
+#: owner/repo the public installers are published under. The source repo is
+#: private, so releases live in a separate PUBLIC "releases only" repo — the
+#: unauthenticated GitHub API can read it and users can download the assets.
+#: Change this to match the public repo you create.
+GITHUB_REPO = "openxmljson-bit/openxmljsoncsv-releases"
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 

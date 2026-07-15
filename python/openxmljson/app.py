@@ -19,7 +19,7 @@ import tempfile
 import urllib.request
 
 from PySide6.QtCore import (
-    QEvent, QObject, QRunnable, QSettings, Qt, QThreadPool, QTimer, Signal,
+    QEvent, QObject, QRunnable, QSettings, Qt, QThreadPool, Signal,
 )
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
@@ -2855,10 +2855,13 @@ class MainWindow(QMainWindow):
                 f"You're on the latest version ({__version__}).")
 
     def _maybe_startup_update_check(self) -> None:
-        """Quiet update check at launch, at most once a day (premium only)."""
+        """Quiet update check at launch, at most once a day. Premium only (it's
+        a no-op when updates are disabled)."""
         if not UPDATES_ENABLED:
             return
         from datetime import datetime, timedelta
+
+        from PySide6.QtCore import QTimer
 
         last = self._settings.value("update/last_check", "")
         due = True
@@ -3057,5 +3060,5 @@ def run(argv=None) -> int:
     app.set_window(window)
     if not had_argv_files and window.tabs.count() == 0:
         window.restore_session()
-    window._maybe_startup_update_check()
+    window._maybe_startup_update_check()   # premium only; no-op on free
     return app.exec()

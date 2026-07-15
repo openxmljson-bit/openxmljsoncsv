@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from openxmljson.edition import EDITION
 from openxmljson.styles import Style
 
 #: Feature boxes (icon, title, subtitle). All shown down the left side.
@@ -145,6 +146,16 @@ class WelcomeWidget(QWidget):
         self._byline = QLabel("Built for GIGABYTE Files", self)
         self._byline.setObjectName("welcomeByline")
         self._byline.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Edition badge — a colored pill positioned on the card's top edge in
+        # _relayout (a real child widget so it renders ABOVE the card).
+        self._edition_badge = QLabel(f"{EDITION.capitalize()} Edition", self)
+        _badge_bg = "#2FA55A" if EDITION == "premium" else "#D9433B"
+        self._edition_badge.setStyleSheet(
+            "QLabel { background: %s; color: #ffffff; font-weight: 600;"
+            " font-size: 13px; padding: 5px 12px; border-radius: 6px; }"
+            % _badge_bg)
+        self._edition_badge.adjustSize()
 
         # -- feature boxes ---------------------------------------------------
         self._boxes = []
@@ -310,6 +321,13 @@ class WelcomeWidget(QWidget):
         cy = max(20, (h - ch) // 2)
         self._card.move(cx, cy)
         card_mid_y = cy + ch / 2
+
+        # Edition badge straddling the card's top-center edge, above the card.
+        badge = self._edition_badge
+        badge.adjustSize()
+        badge.move(cx + (cw - badge.width()) // 2, int(cy - badge.height() / 2))
+        badge.setVisible(self._mode != "none")
+        badge.raise_()
 
         # Byline sits just below the card, centered, and hides with it.
         self._byline.setVisible(self._mode != "none")

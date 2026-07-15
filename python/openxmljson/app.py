@@ -18,7 +18,9 @@ import sys
 import tempfile
 import urllib.request
 
-from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, Signal
+from PySide6.QtCore import (
+    QEvent, QObject, QRunnable, QSettings, Qt, QThreadPool, Signal,
+)
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -2875,6 +2877,34 @@ def _suppress_macos_help_search() -> None:
         pass
 
 
+class _App(QApplication):
+    """QApplication that handles macOS FileOpen events (double-click / Open
+    With / drop-on-Dock-icon), which deliver files via an event — not argv.
+    Files that arrive before the window is ready are buffered and flushed."""
+
+    def __init__(self, argv):
+        super().__init__(argv)
+        self._pending_files = []
+        self._window = None
+
+    def set_window(self, window) -> None:
+        self._window = window
+        for path in self._pending_files:
+            window.open_path(path)
+        self._pending_files.clear()
+
+    def event(self, e):  # noqa: N802
+        if e.type() == QEvent.Type.FileOpen:
+            path = e.file()
+            if path:
+                if self._window is not None:
+                    self._window.open_path(path)
+                else:
+                    self._pending_files.append(path)
+            return True
+        return super().event(e)
+
+
 def run(argv=None) -> int:
     argv = list(argv or sys.argv)
     if not NATIVE_AVAILABLE:
@@ -2885,7 +2915,7 @@ def run(argv=None) -> int:
         )
         return 1
     _set_macos_process_name()
-    app = QApplication(argv)
+    app = _App(argv)
     app.setApplicationName("OPENXMLJSON")
     app.setApplicationDisplayName("OPENXMLJSON")
     app.setDesktopFileName("openxmljson")
@@ -2894,9 +2924,13 @@ def run(argv=None) -> int:
     window.showMaximized()
     # After the native menu bar is realized, divert macOS's Help search field.
     _suppress_macos_help_search()
-    if len(argv) > 1:
+    had_argv_files = len(argv) > 1
+    if had_argv_files:
         for path in argv[1:]:
             window.open_path(path)
-    else:
-        window.restore_session()  # reopen last session's tabs
+    # Flush any macOS FileOpen events already delivered (Finder double-click /
+    # Open With), then only restore the session if nothing was opened.
+    app.set_window(window)
+    if not had_argv_files and window.tabs.count() == 0:
+        window.restore_session()
     return app.exec()

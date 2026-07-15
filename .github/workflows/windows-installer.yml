@@ -40,6 +40,24 @@ jobs:
             echo "version=0.1.0" >> "$GITHUB_OUTPUT"
           fi
 
+      # Stamp the resolved version into pyproject.toml / Cargo.toml so the built
+      # package's metadata (and thus the in-app version) matches the git tag.
+      - name: Stamp version
+        shell: bash
+        env:
+          OXJ_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          PY=$(command -v python3 || command -v python)
+          "$PY" - <<'PY'
+          import os, pathlib, re
+          v = os.environ["OXJ_VERSION"]
+          for f in ("pyproject.toml", "Cargo.toml"):
+              p = pathlib.Path(f)
+              p.write_text(re.sub(r'(?m)^version = "[^"]*"',
+                                  f'version = "{v}"', p.read_text(), count=1))
+          print("Stamped version", v)
+          PY
+
       - name: Install build tooling
         run: |
           python -m pip install --upgrade pip

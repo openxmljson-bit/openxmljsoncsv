@@ -28,6 +28,15 @@ from PyInstaller.utils.hooks import collect_submodules
 # PyInstaller aborts and names the thin (single-arch) file.
 _TARGET_ARCH = os.environ.get("OXJ_TARGET_ARCH") or None
 
+# App version for the macOS Info.plist — read from the installed package
+# metadata (CI stamps it from the git tag before building), so Finder/About
+# match the release. Falls back to 0.0.0 if metadata isn't available.
+try:
+    from importlib.metadata import version as _pkg_version
+    _APP_VERSION = _pkg_version("openxmljson")
+except Exception:
+    _APP_VERSION = "0.0.0"
+
 # App icons (built from a 1024px master by packaging/make_icons.sh). Used only
 # if present, so the build still works before you've made them.
 _ICON_DIR = os.path.join(SPECPATH, "icons")
@@ -156,6 +165,27 @@ if sys.platform == "darwin":
         bundle_identifier="com.openxmljson.viewer",
         info_plist={
             "NSHighResolutionCapable": True,
-            "CFBundleShortVersionString": "0.1.0",
+            "CFBundleShortVersionString": _APP_VERSION,
+            # Declare the file types the app can open so macOS lists it in
+            # "Open With" / lets it be set as the default handler. "Alternate"
+            # rank offers it without hijacking existing defaults.
+            "CFBundleDocumentTypes": [
+                {
+                    "CFBundleTypeName": "Structured data document",
+                    "CFBundleTypeRole": "Viewer",
+                    "LSHandlerRank": "Alternate",
+                    "LSItemContentTypes": [
+                        "public.json",
+                        "public.xml",
+                        "public.comma-separated-values-text",
+                        "public.plain-text",
+                        "public.text",
+                    ],
+                    "CFBundleTypeExtensions": [
+                        "json", "jsonl", "ndjson", "xml", "csv", "tsv",
+                        "tab", "txt", "js", "yaml", "yml",
+                    ],
+                },
+            ],
         },
     )

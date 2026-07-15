@@ -152,8 +152,8 @@ class WelcomeWidget(QWidget):
             box = _Box(self)
             box.setObjectName("featureBox")
             box.setFixedSize(BOX_W, BOX_H)
-            box.setCursor(Qt.CursorShape.PointingHandCursor)
-            box.clicked.connect(window.show_features)
+            # Feature boxes are informational: keep the hover highlight but make
+            # them non-interactive (no click opens the Features window).
             bl = QHBoxLayout(box)
             bl.setContentsMargins(12, 6, 12, 6)
             bl.setSpacing(10)

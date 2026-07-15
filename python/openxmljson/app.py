@@ -46,6 +46,9 @@ from PySide6.QtWidgets import (
 from openxmljson import Document, LazyDocument, NATIVE_AVAILABLE
 from openxmljson.activity import ActivityLights
 from openxmljson.convert import timestamped_name
+from openxmljson.edition import (
+    ENFORCE_SIZE_GATE, JSON_MAX_BYTES, UPDATES_ENABLED,
+)
 from openxmljson.docview import DocumentView
 from openxmljson.styles import WATERMARK_TEXT, resolve, stylesheet
 from openxmljson.tree import EXPAND_ALL_CONFIRM_NODES, EXPAND_ALL_MAX_NODES
@@ -57,6 +60,10 @@ FILE_FILTER = (
 
 #: Extensions opened as read-only plain text (no structural index/tree).
 TEXT_EXTS = (".txt", ".js")
+
+#: Extensions the engine parses as non-JSON structured formats; anything else
+#: (.json/.jsonl/.ndjson and unknown) is treated as JSON.
+_NON_JSON_EXTS = (".xml", ".csv", ".tsv", ".tab")
 
 SCOPES = ["All", "Keys", "Values", "Attributes"]
 
@@ -1339,8 +1346,12 @@ class MainWindow(QMainWindow):
         # throwaway menu in _suppress_macos_help_search() at startup.
         help_menu = menubar.addMenu("&Help")
         self._action(help_menu, "Features", self.show_features, "F1")
-        self._action(help_menu, "Check for Updates…",
-                     lambda: self.check_for_updates(manual=True))
+        # Update checks are a premium feature — the item is shown but disabled
+        # (greyed out) in the free edition.
+        self._updates_action = self._action(
+            help_menu, "Check for Updates…",
+            lambda: self.check_for_updates(manual=True))
+        self._updates_action.setEnabled(UPDATES_ENABLED)
         help_menu.addSeparator()
         self._action(help_menu, "About OPENXMLJSON", self.show_about)
 
@@ -1499,9 +1510,26 @@ class MainWindow(QMainWindow):
         # Plain-text formats (.txt/.js) have no structure to index — open them
         # in a read-only text tab, bypassing the engine (and the lazy/large-file
         # machinery, which is about the structural index) entirely.
-        if os.path.splitext(path)[1].lower() in TEXT_EXTS:
+        ext = os.path.splitext(path)[1].lower()
+        if ext in TEXT_EXTS:
             self._open_text_view(path)
             return
+        # JSON size gate (free edition): cap JSON — not XML/CSV/TSV — at
+        # JSON_MAX_BYTES. Disabled in the premium edition (edition.py).
+        if ENFORCE_SIZE_GATE and JSON_MAX_BYTES and ext not in _NON_JSON_EXTS:
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            if size > JSON_MAX_BYTES:
+                limit_mb = JSON_MAX_BYTES // (1024 * 1024)
+                QMessageBox.information(
+                    self, "Upgrade to open larger files",
+                    f"The Free edition supports JSON files up to {limit_mb} MB "
+                    f"(this file is {size / 1e6:.0f} MB).\n\n"
+                    "For larger files, please contact the sales team to upgrade "
+                    "to Premium.")
+                return
         use_lazy = self._lazy_for(path)
         # The RAM warning is only relevant to an eager, file-sized index;
         # lazy indexing loads on demand and won't exhaust memory.
@@ -2772,7 +2800,10 @@ class MainWindow(QMainWindow):
     def check_for_updates(self, manual: bool) -> None:
         """Check GitHub Releases for a newer version (off the GUI thread).
         ``manual`` = user-initiated (show 'up to date'/errors); otherwise quiet
-        (only notify when an update exists)."""
+        (only notify when an update exists). No-op in the free edition, where
+        the menu item is disabled anyway."""
+        if not UPDATES_ENABLED:
+            return
         from datetime import datetime
 
         self._settings.setValue("update/last_check", datetime.now().isoformat())
@@ -2824,7 +2855,9 @@ class MainWindow(QMainWindow):
                 f"You're on the latest version ({__version__}).")
 
     def _maybe_startup_update_check(self) -> None:
-        """Quiet update check at launch, at most once a day."""
+        """Quiet update check at launch, at most once a day (premium only)."""
+        if not UPDATES_ENABLED:
+            return
         from datetime import datetime, timedelta
 
         last = self._settings.value("update/last_check", "")

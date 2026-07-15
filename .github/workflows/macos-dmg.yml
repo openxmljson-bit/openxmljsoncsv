@@ -2,9 +2,8 @@ name: macOS DMG (universal2)
 
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
-  workflow_dispatch: {}
+    tags: ["v*"]            # build/publish only on version tags
+  workflow_dispatch: {}      # and on-demand from the Actions tab
 
 permissions:
   contents: write            # needed to attach the DMG to a Release on tags

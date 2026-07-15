@@ -2781,12 +2781,15 @@ class MainWindow(QMainWindow):
         self._update_signals = getattr(self, "_update_signals", [])
         self._update_signals.append(signals)  # keep alive until delivered
         if manual:
-            self.statusBar().showMessage("Checking for updates…")
+            # Auto-clears after 15s as a backstop; also cleared when the result
+            # arrives (_on_update_result).
+            self.statusBar().showMessage("Checking for updates…", 15000)
         QThreadPool.globalInstance().start(_UpdateTask(signals, manual))
 
     def _on_update_result(self, info, manual: bool) -> None:
         from openxmljson import __version__, update
 
+        self.statusBar().clearMessage()  # drop the "Checking for updates…" text
         sender = self.sender()
         if hasattr(self, "_update_signals"):
             self._update_signals = [s for s in self._update_signals

@@ -136,6 +136,24 @@ def stylesheet(s: Style) -> str:
         color: {s.text.name()};
         border: 1px solid {s.chrome_border.name()};
     }}
+    /* Explicit item padding stops Qt from reserving the wide native
+       icon/checkmark gutter, so icon-less rows sit flush-left. */
+    QMenu::item {{
+        padding: 4px 24px 4px 18px;
+    }}
+    QMenu::icon {{
+        left: 3px;
+    }}
+    QMenu::indicator {{
+        width: 12px;
+        height: 12px;
+        left: 3px;
+    }}
+    QMenu::separator {{
+        height: 1px;
+        background: {s.chrome_border.name()};
+        margin: 4px 8px;
+    }}
     QTreeView {{
         background: {s.view_bg.name()};
         alternate-background-color: {s.view_alt_bg.name()};

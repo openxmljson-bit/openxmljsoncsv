@@ -1341,6 +1341,16 @@ class MainWindow(QMainWindow):
             welcome_group.addAction(action)
             welcome_menu.addAction(action)
 
+        # macOS auto-appends an "Enter Full Screen" item (with an icon) to the
+        # end of the View menu. The icon column is reserved per section (between
+        # separators), so that lone icon indents everything sharing its section
+        # (Appearance / Lazy Indexing / Welcome Screen). A trailing separator
+        # isolates the auto-appended item in its own section, so the submenu
+        # rows above stay flush-left. Also strip any stray icons on open.
+        view_menu.addSeparator()
+        view_menu.aboutToShow.connect(
+            lambda m=view_menu: self._strip_menu_icons(m))
+
         # Help ---------------------------------------------------------------
         # macOS injects a Search field into the Help menu; it's diverted to a
         # throwaway menu in _suppress_macos_help_search() at startup.
@@ -1358,6 +1368,16 @@ class MainWindow(QMainWindow):
         # Initial enable/disable for the empty (no-document) state.
         self._sync_tools_controls()
         self._sync_scope_combo()
+
+    @staticmethod
+    def _strip_menu_icons(menu) -> None:
+        """Clear icons from a menu's actions so Qt doesn't reserve a wide icon
+        gutter (see the View menu's aboutToShow hook)."""
+        from PySide6.QtGui import QIcon
+
+        for action in menu.actions():
+            if not action.icon().isNull():
+                action.setIcon(QIcon())
 
     # -- styling / fonts --------------------------------------------------------------
 
@@ -3007,6 +3027,25 @@ def _suppress_macos_help_search() -> None:
         pass
 
 
+def _suppress_macos_edit_menu_extras() -> None:
+    """macOS auto-injects "Start Dictation…" and "Emoji & Symbols" into the
+    Edit menu. Apple exposes opt-out defaults for both; set them before the
+    menu bar is realized so those rows never appear. (The newer "Writing Tools"
+    and "AutoFill" injections have no documented switch, so they remain.)"""
+    if sys.platform != "darwin":
+        return
+    try:
+        from Foundation import NSUserDefaults  # type: ignore
+
+        defaults = NSUserDefaults.standardUserDefaults()
+        defaults.registerDefaults_({
+            "NSDisabledDictationMenuItem": True,
+            "NSDisabledCharacterPaletteMenuItem": True,
+        })
+    except Exception:  # pyobjc not installed — harmless
+        pass
+
+
 class _App(QApplication):
     """QApplication that handles macOS FileOpen events (double-click / Open
     With / drop-on-Dock-icon), which deliver files via an event — not argv.
@@ -3045,6 +3084,7 @@ def run(argv=None) -> int:
         )
         return 1
     _set_macos_process_name()
+    _suppress_macos_edit_menu_extras()  # before the Edit menu is realized
     app = _App(argv)
     app.setApplicationName("OPENXMLJSON")
     app.setApplicationDisplayName("OPENXMLJSON")

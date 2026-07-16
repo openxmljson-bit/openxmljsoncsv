@@ -543,6 +543,10 @@ class DocumentTreeView(QTreeView):
             add(menu, "Copy Path", put(lambda: model.path_text(index)))
 
         menu.addSeparator()
+        add(menu, "Copy to New Tab",
+            lambda: self._copy_to_new_tab(index, fmt, kind))
+
+        menu.addSeparator()
         export_as = QMenu("Export Value As", menu)
         if fmt == "XML" and kind == ELEMENT:
             add(export_as, "XML…", lambda: self._export(index, mode="xml"))
@@ -606,6 +610,25 @@ class DocumentTreeView(QTreeView):
             )
         except (RecursionError, MemoryError) as exc:
             return f"<value too large to serialize: {exc}>"
+
+    def _copy_to_new_tab(self, index, fmt=None, kind=None) -> None:
+        """Open the selected node's whole subtree in a new tab. XML elements
+        open as XML; everything else opens as pretty JSON."""
+        window = self.window()
+        if not hasattr(window, "_open_text_as_tab"):
+            return
+        src_index, model = self._source_model(index)
+        node = model.node_id(src_index)
+        ELEMENT = 8
+        try:
+            if fmt == "XML" and kind == ELEMENT:
+                content, suffix = model.xml_text(node), ".xml"
+            else:
+                content, suffix = self._as_json(src_index), ".json"
+        except (RecursionError, MemoryError) as exc:
+            QMessageBox.warning(self, "Cannot copy to new tab", str(exc))
+            return
+        window._open_text_as_tab(content, suffix)
 
     def _export(self, index, mode: str = "json", as_json=None) -> None:
         if as_json is not None:  # backward-compatible boolean form

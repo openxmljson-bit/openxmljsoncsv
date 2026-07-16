@@ -5,6 +5,7 @@ lines (hub-and-spoke).
 
 from __future__ import annotations
 
+import html
 import os
 
 from PySide6.QtCore import QPointF, Qt, QTimer, Signal
@@ -18,8 +19,49 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from openxmljson.edition import EDITION
+from openxmljson.edition import EDITION_BADGE_COLOR, EDITION_LABEL
 from openxmljson.styles import Style
+
+#: Accent color for the file-size hint in the recent list (amber/orange).
+RECENT_SIZE_COLOR = "#E39A2D"
+
+
+class _RecentLink(QLabel):
+    """A clickable, rich-text recent-file row (so the size can be colored)."""
+
+    clicked = Signal()
+
+    def mousePressEvent(self, event):  # noqa: N802 (Qt override)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+def _middle_ellipsis(name: str, limit: int = 32) -> str:
+    """Shorten an over-long filename with a middle '…', keeping the start and
+    the tail (so the extension stays visible). E.g.
+    'very_long_export_name.json' -> 'very_long_e…rt_name.json'."""
+    if len(name) <= limit:
+        return name
+    keep = limit - 1  # room for the ellipsis
+    head = keep // 2
+    tail = keep - head
+    return f"{name[:head]}…{name[-tail:]}"
+
+
+def _human_size(path: str) -> str:
+    """Compact human-readable size for a file, or '' if it can't be read."""
+    try:
+        n = os.path.getsize(path)
+    except OSError:
+        return ""
+    if n >= 1024 ** 3:
+        return f"{n / 1024 ** 3:.1f}GB"
+    if n >= 1024 ** 2:
+        return f"{n / 1024 ** 2:.1f}MB"
+    if n >= 1024:
+        return f"{n / 1024:.0f}KB"
+    return f"{n}B"
 
 #: Feature boxes (icon, title, subtitle). All shown down the left side.
 FEATURES = [
@@ -149,8 +191,8 @@ class WelcomeWidget(QWidget):
 
         # Edition badge — a colored pill positioned on the card's top edge in
         # _relayout (a real child widget so it renders ABOVE the card).
-        self._edition_badge = QLabel(f"{EDITION.capitalize()} Edition", self)
-        _badge_bg = "#2FA55A" if EDITION == "premium" else "#D9433B"
+        self._edition_badge = QLabel(EDITION_LABEL, self)
+        _badge_bg = EDITION_BADGE_COLOR
         self._edition_badge.setStyleSheet(
             "QLabel { background: %s; color: #ffffff; font-weight: 600;"
             " font-size: 13px; padding: 5px 12px; border-radius: 6px; }"
@@ -214,15 +256,22 @@ class WelcomeWidget(QWidget):
             w = item.widget()
             if w is not None:
                 w.deleteLater()
-        recent = self._window._recent_list()[:6]
+        recent = self._window._recent_list()[:10]
         self._recent_title.setVisible(bool(recent))
         for path in recent:
-            link = QPushButton(f"  {os.path.basename(path)}")
+            size = _human_size(path)
+            name = html.escape(_middle_ellipsis(os.path.basename(path)))
+            text = f"&nbsp;&nbsp;{name}"
+            if size:
+                text += (f"&nbsp;&nbsp;<span style='color:{RECENT_SIZE_COLOR};"
+                         f"font-weight:bold;'>~{html.escape(size)}</span>")
+            link = _RecentLink()
+            link.setTextFormat(Qt.TextFormat.RichText)
+            link.setText(text)
             link.setObjectName("welcomeRecent")
             link.setToolTip(path)
             link.setCursor(Qt.CursorShape.PointingHandCursor)
-            link.setFlat(True)
-            link.clicked.connect(lambda _=False, p=path: self._window.open_path(p))
+            link.clicked.connect(lambda p=path: self._window.open_path(p))
             self._recent_box.addWidget(link)
         self._build_stats()
         self._relayout()  # reposition/show the stats panel for new counts
@@ -245,7 +294,7 @@ class WelcomeWidget(QWidget):
             return
         peak = max(counts.values())
         # Stable, familiar order; unknown formats appended.
-        order = ["JSON", "NDJSON", "XML", "CSV", "TSV"]
+        order = ["JSON", "NDJSON", "XML", "CSV", "TSV", "TXT", "JS"]
         keys = [k for k in order if k in counts] + [
             k for k in counts if k not in order
         ]
@@ -306,7 +355,7 @@ class WelcomeWidget(QWidget):
         self._timer.stop()
 
     def _tick(self) -> None:
-        self._phase = (self._phase + 0.012) % 1.0
+        self._phase = (self._phase + 0.005) % 1.0
         self.update()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
@@ -444,17 +493,21 @@ class WelcomeWidget(QWidget):
         line = QColor(self._style.guide)
         pulse = QColor(self._style.placeholder)
         pen = QPen(line, 1.4)
-        for pts, offset in self._paths:
+        for idx, (pts, offset) in enumerate(self._paths):
             painter.setPen(pen)
             for a, b in zip(pts, pts[1:]):
                 painter.drawLine(a, b)
             if self._mode == "animated":
-                # Pulse traveling card → box.
+                # Alternate lines pulse in opposite directions: even indices
+                # travel card → box, odd indices travel box → card.
                 t = (self._phase + offset) % 1.0
+                if idx % 2:
+                    t = 1.0 - t
                 p = self._sample(pts, t)
             else:
-                # Static: a steady dot at the card end of each connector.
-                p = pts[0]
+                # Static: alternate which end holds the steady dot — even
+                # lines at the card end, odd lines at the feature-box end.
+                p = pts[-1] if idx % 2 else pts[0]
             painter.setPen(Qt.PenStyle.NoPen)
             glow = QColor(pulse)
             glow.setAlpha(70)

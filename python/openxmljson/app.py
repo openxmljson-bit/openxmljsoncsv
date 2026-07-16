@@ -1622,7 +1622,7 @@ class MainWindow(QMainWindow):
         )
         self.tabs.setCurrentIndex(index)
         self._update_tab_marks()
-        self._bump_file_type("TEXT")
+        self._bump_file_type("JS" if path.lower().endswith(".js") else "TXT")
         self._update_central()
         self._remember_recent(path)
         self._watch(path)
@@ -1888,11 +1888,14 @@ class MainWindow(QMainWindow):
         raw = str(self._settings.value("file_counts", "{}"))
         try:
             data = _json.loads(raw)
-            return (
-                {str(k): int(v) for k, v in data.items()}
-                if isinstance(data, dict)
-                else {}
-            )
+            if not isinstance(data, dict):
+                return {}
+            counts = {str(k): int(v) for k, v in data.items()}
+            # Legacy: older builds tallied all plain-text files as "TEXT".
+            # Fold that into "TXT" so the two aren't shown separately.
+            if "TEXT" in counts:
+                counts["TXT"] = counts.get("TXT", 0) + counts.pop("TEXT")
+            return counts
         except (ValueError, TypeError):
             return {}
 

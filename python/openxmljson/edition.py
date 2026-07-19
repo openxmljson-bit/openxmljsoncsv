@@ -11,21 +11,21 @@ derived below, so the rest of the app just reads these flags.
 
 from __future__ import annotations
 
-#: The build's edition: "free", "premium", or "unbxd".
-EDITION = "unbxd"
+#: The build's edition: "essential", "premium", or "unbxd".
+EDITION = "premium"
 
 #: JSON file-size cap (bytes) applied when the size gate is enforced.
 JSON_MAX_BYTES = 100 * 1024 * 1024   # 100 MB
 
 _EDITIONS = {
-    "free":    {"size_gate": True,  "updates": False,
-                "label": "Free Edition",          "badge": "#D9433B"},
+    "essential":    {"size_gate": True,  "updates": False,
+                "label": "Essential Edition",          "badge": "#D9433B"},
     "premium": {"size_gate": False, "updates": True,
                 "label": "Premium Edition",       "badge": "#2FA55A"},
-    "unbxd":   {"size_gate": False, "updates": True,
-                "label": "Netcore Unbxd Edition", "badge": "#2F6BE3"},
+    "narik":   {"size_gate": False, "updates": True,
+                "label": "Narik AI Edition", "badge": "#2F6BE3"},
 }
-_flags = _EDITIONS.get(EDITION, _EDITIONS["free"])
+_flags = _EDITIONS.get(EDITION, _EDITIONS["essential"])
 
 #: True to enforce the JSON size gate (free); False allows any size (premium).
 ENFORCE_SIZE_GATE = _flags["size_gate"]

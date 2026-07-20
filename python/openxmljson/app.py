@@ -2906,7 +2906,7 @@ class MainWindow(QMainWindow):
             f"OPENXMLJSON {__version__}\n\n"
             "Viewer for very large JSON / XML / CSV files, built on a "
             "zero-copy memory-mapped structural index.\n\n"
-            "Author: Kiran Peddikuppa",
+            "Author: OPENXMLJSON",
         )
 
     # -- search --------------------------------------------------------------------------------

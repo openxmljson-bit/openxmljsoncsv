@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QGuiApplication
 
-WATERMARK_TEXT = "Kiran Peddikuppa"
+WATERMARK_TEXT = ""
 
 
 @dataclass(frozen=True)

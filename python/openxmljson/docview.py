@@ -97,7 +97,8 @@ class DocumentView(QWidget):
         self._stack = QStackedLayout(self)
         self._stack.setContentsMargins(0, 0, 0, 0)
         self._stack.addWidget(self.tree)
-        self.table = None  # QTableView, created lazily for CSV tabs
+        self.table = None  # inner QTableView, created lazily for CSV tabs
+        self._table_container = None  # CsvTableView (toolbar + table) in stack
         self._table_model = None
         self._table_proxy = None  # RecordFilterProxy over the table
         self.xml_view = None  # QPlainTextEdit, created lazily for XML tabs
@@ -148,6 +149,14 @@ class DocumentView(QWidget):
         # (they were parented to this view for lifetime safety).
         if self.table is not None:
             self.table.setModel(None)
+        # The CSV table wraps the *old* document's model — drop it so it's
+        # rebuilt against the new doc on the next set_table_mode().
+        if self._table_container is not None:
+            self._stack.removeWidget(self._table_container)
+            self._table_container.setParent(None)
+            self._table_container.deleteLater()
+            self._table_container = None
+            self.table = None
         self._stack.setCurrentIndex(0)  # always (re)bind on the tree page
         self.tree.set_search(None)
         self.tree.setModel(self.model)
@@ -164,11 +173,12 @@ class DocumentView(QWidget):
                 _nodes = 0
         self.tree.set_expand_all(self.eager, _nodes)
         self._connect_selection()
-        for old in (self._filter_proxy, self._table_proxy):
-            if old is not None:
-                old.setParent(None)
-                old.deleteLater()
+        if self._filter_proxy is not None:
+            self._filter_proxy.setParent(None)
+            self._filter_proxy.deleteLater()
         self._filter_proxy = None
+        # _table_proxy/_table_model are owned by the CSV container that was
+        # already disposed above; just drop our references.
         self._table_proxy = None
         self._table_model = None
         # Lazy documents are always treated as "big": their node count is
@@ -680,29 +690,34 @@ class DocumentView(QWidget):
         return self.doc is not None and self.doc.format_name() in ("CSV", "TSV")
 
     def table_mode(self) -> bool:
-        return self._stack.currentIndex() == 1
+        return (
+            self._table_container is not None
+            and self._stack.currentWidget() is self._table_container
+        )
+
+    def copy_table_selection(self) -> bool:
+        """If the CSV table is active, copy the selected cells (as TSV) and
+        return True; otherwise return False so the caller can fall back."""
+        if self.table_mode() and self._table_container is not None:
+            self._table_container.copy_selection()
+            return True
+        return False
 
     def set_table_mode(self, enabled: bool) -> None:
         if not self.supports_table():
             return
         if enabled:
-            if self.table is None:
-                from PySide6.QtWidgets import QTableView
+            if self._table_container is None:
+                from openxmljson.csvtableview import CsvTableView
 
-                self.table = QTableView()
-                self.table.setAlternatingRowColors(True)
-                self.table.horizontalHeader().setStretchLastSection(True)
+                self._table_container = CsvTableView(self, self)
+                self.table = self._table_container.view       # inner QTableView
+                self._table_model = self._table_container.model
+                self._table_proxy = self._table_container.proxy
                 self.table.setFont(self.tree.font())
-                self._stack.addWidget(self.table)
-            if self._table_model is None:
-                from openxmljson.csvtable import RecordFilterProxy, RecordTableModel
-
-                # Parent to the view so Qt owns their lifetime.
-                self._table_model = RecordTableModel(self.model, self)
-                self._table_proxy = RecordFilterProxy(self._table_model, self)
+                self._stack.addWidget(self._table_container)
             self._table_proxy.set_visible(self._current_visible)
-            self.table.setModel(self._table_proxy)
-            self._stack.setCurrentIndex(1)
+            self._stack.setCurrentWidget(self._table_container)
         else:
             self._stack.setCurrentIndex(0)
 

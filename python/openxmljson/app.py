@@ -69,7 +69,7 @@ SCOPES = ["All", "Keys", "Values", "Attributes"]
 
 #: Tab cap: every open tab keeps its node index resident (32 B/node), so
 #: a bound keeps memory predictable even with several huge files open.
-MAX_TABS = 12
+MAX_TABS = 20
 
 #: Slack kept free beyond a write's own size, so we don't fill the disk to the
 #: last byte (which makes macOS itself unstable).
@@ -175,48 +175,13 @@ class PlaceholderView(QWidget):
         pass
 
 
-def _total_ram_bytes():
-    """Total physical RAM, or None if it can't be determined."""
-    try:  # macOS / Linux
-        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-    except (ValueError, AttributeError, OSError):
-        pass
-    try:  # Windows
-        import ctypes
-
-        class _MemStatus(ctypes.Structure):
-            _fields_ = [
-                ("dwLength", ctypes.c_ulong),
-                ("dwMemoryLoad", ctypes.c_ulong),
-                ("ullTotalPhys", ctypes.c_ulonglong),
-                ("ullAvailPhys", ctypes.c_ulonglong),
-                ("ullTotalPageFile", ctypes.c_ulonglong),
-                ("ullAvailPageFile", ctypes.c_ulonglong),
-                ("ullTotalVirtual", ctypes.c_ulonglong),
-                ("ullAvailVirtual", ctypes.c_ulonglong),
-                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-            ]
-
-        stat = _MemStatus()
-        stat.dwLength = ctypes.sizeof(_MemStatus)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-            return int(stat.ullTotalPhys)
-    except Exception:
-        pass
-    return None
-
-
-#: Auto lazy-mode policy. An eager open builds a fully-resident index that is
-#: roughly file-sized AND keeps the file mmap'd, so the real footprint is about
-#: TWICE the file size. To stay safely within RAM (and never wedge the machine
-#: into a swap death-spiral), a file opens eagerly only when it is BOTH under an
-#: absolute cap and small relative to RAM; anything larger uses on-demand lazy
-#: indexing, whose memory scales with the viewed portion, not the file size.
-LAZY_ABS_BYTES = 2 * 1024 ** 3       # hard cap: >= 2 GB always opens lazily
-LAZY_EAGER_FRACTION = 0.35           # eager only if file <= 35% RAM (~70% at 2x)
-#: Fraction of RAM above which the "large file may exhaust memory" warning
-#: fires (only reachable when lazy mode is forced off for an oversized file).
-LAZY_AUTO_FRACTION = 0.70
+#: Memory sensing and the eager/lazy policy live in openxmljson.memory (the
+#: single source of truth, also used by the welcome-screen Memory panel).
+from openxmljson import memory  # noqa: E402
+from openxmljson.memory import (  # noqa: E402
+    LAZY_AUTO_FRACTION,
+    total_ram_bytes as _total_ram_bytes,
+)
 
 
 class _UpdateSignals(QObject):
@@ -451,11 +416,12 @@ class TightTabBar(QTabBar):
     """Trims the platform style's generous tab width so the close button
     sits right next to the filename."""
 
-    TRIM = 18  # px of style-imposed spacing to reclaim
+    TRIM = 18   # px of style-imposed spacing to reclaim
+    MAX_W = 220  # cap so long names elide (in the middle) instead of sprawling
 
     def tabSizeHint(self, index: int):  # noqa: N802
         size = super().tabSizeHint(index)
-        size.setWidth(max(size.width() - self.TRIM, 60))
+        size.setWidth(max(min(size.width() - self.TRIM, self.MAX_W), 60))
         return size
 
 
@@ -496,6 +462,9 @@ class MainWindow(QMainWindow):
         # Tabs hug their content instead of stretching to fill the bar
         # (stretching is what pushed the ✕ far away from the filename).
         self.tabs.tabBar().setExpanding(False)
+        # Elide long tab names in the MIDDLE so the file extension stays visible
+        # (e.g. "unbxd_pum…v0.json" rather than "unbxd_pum…").
+        self.tabs.tabBar().setElideMode(Qt.TextElideMode.ElideMiddle)
         # (documentMode suppresses tab borders/radii on some platforms —
         # keep it off so the styled rounded tabs render.)
         self.tabs.tabCloseRequested.connect(self.close_tab)
@@ -1481,14 +1450,13 @@ class MainWindow(QMainWindow):
 
         Lazy mode (setting ``lazy_mode``): ``never`` = always eager;
         ``always`` = lazy for every supported file; ``auto`` (default) = eager
-        only for files that are BOTH under ``LAZY_ABS_BYTES`` (2 GB) and within
-        ``LAZY_EAGER_FRACTION`` (35%) of physical RAM — since the eager index is
-        resident and roughly file-sized, that keeps peak use near/below 70% of
-        RAM. Everything larger uses on-demand lazy indexing (memory scales with
-        the viewed portion), so opening a big file can't exhaust RAM and wedge
-        the machine. JSON/NDJSON, CSV/TSV and XML are all supported. (Note: lazy
-        XML is lenient and does not validate well-formedness — but it only kicks
-        in for files large enough that an eager parse would risk RAM.)"""
+        while the file size is within 2.5x *available* RAM
+        (``LAZY_EAGER_RAM_MULTIPLE``), and lazy for anything larger. Lazy
+        indexing loads on demand (memory scales with the viewed portion), so
+        opening a big file can't exhaust RAM and wedge the machine. JSON/NDJSON,
+        CSV/TSV and XML are all supported. (Note: lazy XML is lenient and does
+        not validate well-formedness — but it only kicks in for files large
+        enough that an eager parse would risk RAM.)"""
         if LazyDocument is None:
             return False
         mode = str(self._settings.value("lazy_mode", "auto")).lower()
@@ -1500,13 +1468,10 @@ class MainWindow(QMainWindow):
             size = os.path.getsize(path)
         except OSError:
             return False
-        # Lazy above an absolute cap regardless of RAM: even on a big machine a
-        # multi-GB eager index (≈2x file resident) invites heavy swapping, and
-        # with a full disk that can hard-wedge the system.
-        if size >= LAZY_ABS_BYTES:
-            return True
-        ram = _total_ram_bytes()
-        return bool(ram) and size > LAZY_EAGER_FRACTION * ram
+        limit = memory.eager_limit_bytes(
+            memory.available_ram_bytes(), _total_ram_bytes())
+        # If RAM can't be read at all, default to eager (matches prior behavior).
+        return bool(limit) and size > limit
 
     def open_path(self, path: str, allow_duplicate: bool = False) -> None:
         # Already open? Just switch to that tab (File ▸ Reload re-parses) —
@@ -2612,6 +2577,9 @@ class MainWindow(QMainWindow):
             return
         view = self.current_view()
         if view is None:
+            return
+        # In CSV table mode, copy the selected cells instead of a tree row.
+        if view.copy_table_selection():
             return
         index = view.tree.currentIndex()
         if index.isValid():

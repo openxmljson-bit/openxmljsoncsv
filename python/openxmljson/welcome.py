@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from openxmljson import memory
 from openxmljson.edition import EDITION_BADGE_COLOR, EDITION_LABEL
 from openxmljson.styles import Style
 
@@ -130,7 +131,7 @@ class WelcomeWidget(QWidget):
         # -- central card ----------------------------------------------------
         self._card = QFrame(self)
         self._card.setObjectName("welcomeCard")
-        self._card.setFixedWidth(400)
+        self._card.setFixedWidth(460)
         col = QVBoxLayout(self._card)
         col.setContentsMargins(40, 32, 40, 32)
         col.setSpacing(6)
@@ -159,6 +160,8 @@ class WelcomeWidget(QWidget):
         chips.addStretch(1)
         col.addLayout(chips)
 
+        actions = QHBoxLayout()
+        actions.setSpacing(6)
         for label, slot in (
             ("Open File…", window.open_dialog),
             ("Open URL…", window.open_url),
@@ -168,7 +171,8 @@ class WelcomeWidget(QWidget):
             btn.setObjectName("welcomeButton")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(slot)
-            col.addWidget(btn)
+            actions.addWidget(btn)
+        col.addLayout(actions)
 
         self._recent_title = QLabel("Recent")
         self._recent_title.setObjectName("welcomeSection")
@@ -242,6 +246,34 @@ class WelcomeWidget(QWidget):
         self._has_stats = False
         self._stats.hide()
 
+        # -- right-side "Memory" panel (below the stats card) ----------------
+        self._mem = QFrame(self)
+        self._mem.setObjectName("welcomeCard")
+        self._mem.setFixedWidth(STATS_W)
+        mc = QVBoxLayout(self._mem)
+        mc.setContentsMargins(20, 18, 20, 18)
+        mc.setSpacing(8)
+        mem_head = QHBoxLayout()
+        mem_head.setContentsMargins(0, 0, 0, 0)
+        mem_head.setSpacing(6)
+        self._mem_title = QLabel("Memory")
+        self._mem_title.setObjectName("statsTitle")
+        mem_head.addWidget(self._mem_title)
+        mem_head.addStretch(1)
+        self._mem_refresh = QPushButton("Refresh")
+        self._mem_refresh.setObjectName("memRefresh")
+        self._mem_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mem_refresh.setFlat(True)
+        self._mem_refresh.setToolTip("Refresh memory stats")
+        self._mem_refresh.clicked.connect(self._build_memory)
+        mem_head.addWidget(self._mem_refresh)
+        mc.addLayout(mem_head)
+        self._mem_rows = QVBoxLayout()
+        self._mem_rows.setSpacing(10)
+        mc.addLayout(self._mem_rows)
+        mc.addStretch(1)
+        self._mem.hide()
+
         self._timer = QTimer(self)
         self._timer.setInterval(33)  # ~30 fps
         self._timer.timeout.connect(self._tick)
@@ -274,6 +306,7 @@ class WelcomeWidget(QWidget):
             link.clicked.connect(lambda p=path: self._window.open_path(p))
             self._recent_box.addWidget(link)
         self._build_stats()
+        self._build_memory()
         self._relayout()  # reposition/show the stats panel for new counts
 
     def _build_stats(self) -> None:
@@ -329,6 +362,34 @@ class WelcomeWidget(QWidget):
             hb.addWidget(value)
             self._stats_rows.addWidget(row)
 
+    def _build_memory(self) -> None:
+        """Rebuild the Memory panel: available RAM plus the size thresholds
+        that decide in-memory vs. lazy loading, reflecting the current Lazy
+        Indexing mode."""
+        while self._mem_rows.count():
+            item = self._mem_rows.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        try:
+            mode = str(self._window._settings.value("lazy_mode", "auto"))
+        except Exception:
+            mode = "auto"
+        for label, value in memory.summary_rows(mode=mode):
+            row = QWidget()
+            row.setObjectName("statRow")
+            hb = QHBoxLayout(row)
+            hb.setContentsMargins(0, 0, 0, 0)
+            hb.setSpacing(8)
+            name = QLabel(label)
+            name.setObjectName("statName")
+            val = QLabel(value)
+            val.setObjectName("statCount")
+            hb.addWidget(name)
+            hb.addStretch(1)
+            hb.addWidget(val)
+            self._mem_rows.addWidget(row)
+
     # -- layout & animation ---------------------------------------------------
 
     def set_mode(self, mode: str) -> None:
@@ -367,7 +428,9 @@ class WelcomeWidget(QWidget):
         self._card.adjustSize()
         cw, ch = self._card.width(), self._card.height()
         cx = (w - cw) // 2
-        cy = max(20, (h - ch) // 2)
+        # Bias the card upward: top gap ~20% of the leftover space (rather than
+        # dead-centered) so it sits nearer the top.
+        cy = max(20, int((h - ch) * 0.20))
         self._card.move(cx, cy)
         card_mid_y = cy + ch / 2
 
@@ -394,7 +457,20 @@ class WelcomeWidget(QWidget):
             n = len(column)
             if n == 0:
                 return
-            top, bottom = 60, h - 60
+            # Center the box band on the card (not the window) so the boxes and
+            # their connector lines follow the upward-shifted card. The band is
+            # capped and clamped on-screen.
+            per = BOX_H + 26
+            band_h = min(h - 80, n * per)
+            top = card_mid_y - band_h / 2
+            bottom = card_mid_y + band_h / 2
+            if top < 40:
+                bottom += 40 - top
+                top = 40
+            if bottom > h - 40:
+                top -= bottom - (h - 40)
+                bottom = h - 40
+                top = max(40, top)
             step = (bottom - top) / max(n, 1)
             card_left, card_right = cx, cx + cw
             for i, box in enumerate(column):
@@ -434,10 +510,21 @@ class WelcomeWidget(QWidget):
         # the right of the centered card.
         self._stats.adjustSize()
         sx = w - STATS_W - 32
-        show_stats = self._has_stats and sx > cx + cw + 20
+        has_room = sx > cx + cw + 20
+        show_stats = self._has_stats and has_room
         self._stats.setVisible(show_stats)
         if show_stats:
             self._stats.move(sx, 28)  # anchored near the top
+
+        # Memory panel: directly below the stats card (or at the top if the
+        # stats card is hidden), whenever there's room right of the card and
+        # we're not in the blank mode.
+        self._mem.adjustSize()
+        show_mem = has_room and self._mode != "none"
+        self._mem.setVisible(show_mem)
+        if show_mem:
+            my = (28 + self._stats.height() + 16) if show_stats else 28
+            self._mem.move(sx, my)
 
     @staticmethod
     def _clamp(value, lo, hi, toward):
@@ -540,6 +627,11 @@ class WelcomeWidget(QWidget):
             #statsTitle {{
                 color: {s.key.name()}; font-size: 14px; font-weight: bold;
             }}
+            #memRefresh {{
+                background: transparent; border: none;
+                color: #3B82F6; font-size: 11px; font-weight: bold;
+            }}
+            #memRefresh:hover {{ color: #60A5FA; }}
             #statName {{ color: {s.text.name()}; font-size: 13px; }}
             #statCount {{
                 color: {s.key.name()}; font-size: 13px; font-weight: bold;
@@ -579,7 +671,7 @@ class WelcomeWidget(QWidget):
             #welcomeButton {{
                 background: {s.window_bg.name()}; color: {s.key.name()};
                 border: 1px solid {s.chrome_border.name()};
-                border-radius: 6px; padding: 8px 16px; font-size: 13px;
+                border-radius: 6px; padding: 8px 10px; font-size: 13px;
             }}
             #welcomeButton:hover {{ border-color: {s.placeholder.name()}; }}
             #welcomeRecent {{

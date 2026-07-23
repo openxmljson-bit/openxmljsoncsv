@@ -14,7 +14,15 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from PySide6.QtCore import QEvent, QModelIndex, Qt
+from PySide6.QtCore import (
+    QEvent,
+    QModelIndex,
+    QObject,
+    QRunnable,
+    Qt,
+    QThreadPool,
+    Signal,
+)
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QComboBox,
@@ -24,17 +32,45 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
     QApplication,
+    QListWidget,
     QListWidgetItem,
     QMenu,
     QPushButton,
+    QStyle,
+    QStyleOptionViewItem,
     QTableView,
     QVBoxLayout,
     QWidget,
 )
 
 from openxmljson.csvtable import FILTER_OPS, RecordFilterProxy, RecordTableModel
+
+
+class _ColumnList(QListWidget):
+    """QListWidget where clicking anywhere on a row toggles its checkbox (not
+    just the small indicator), so selecting a column name checks it too. A click
+    on the checkbox itself keeps its normal behavior."""
+
+    def mousePressEvent(self, event):  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position().toPoint()
+            item = self.itemAt(pos)
+            if item is not None and item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                index = self.indexFromItem(item)
+                opt = QStyleOptionViewItem()
+                opt.initFrom(self)
+                opt.rect = self.visualRect(index)
+                opt.features |= (
+                    QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator)
+                cb = self.style().subElementRect(
+                    QStyle.SubElement.SE_ItemViewItemCheckIndicator, opt, self)
+                if self.visualRect(index).contains(pos) and not cb.contains(pos):
+                    new = (Qt.CheckState.Unchecked
+                           if item.checkState() == Qt.CheckState.Checked
+                           else Qt.CheckState.Checked)
+                    item.setCheckState(new)
+        super().mousePressEvent(event)
 
 
 class _CsvTable(QTableView):
@@ -47,6 +83,98 @@ class _CsvTable(QTableView):
             self.clearSelection()
             self.setCurrentIndex(QModelIndex())
         super().focusOutEvent(event)
+
+
+class _ExportSignals(QObject):
+    progress = Signal(int, int)   # (current, total)
+    done = Signal(str)            # output path
+    failed = Signal(str)
+    cancelled = Signal()
+
+
+class _CsvExportTask(QRunnable):
+    """Stream the visible/filtered table to a file off the GUI thread. Each
+    record is reconstructed one at a time (bounded memory), so exporting a
+    large table doesn't freeze the app."""
+
+    def __init__(self, model, nodes, cols, headers, fmt, out_path):
+        super().__init__()
+        self.signals = _ExportSignals()
+        self._model = model
+        self._nodes = nodes        # source record node ids, in display order
+        self._cols = cols          # visible logical column indexes
+        self._headers = headers
+        self._fmt = fmt            # "json" or "csv"
+        self._out_path = out_path
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def _record(self, node):
+        """Reconstruct a record and keep only the visible columns, keyed by
+        header name (dict records) or by position (headerless list records)."""
+        val = self._model.reconstruct(node)
+        out = {}
+        for c in self._cols:
+            key = self._headers[c] if c < len(self._headers) else f"Column {c+1}"
+            if isinstance(val, dict):
+                out[key] = val.get(key)
+            elif isinstance(val, list):
+                out[key] = val[c] if c < len(val) else None
+            else:
+                out[key] = val
+        return out
+
+    def run(self) -> None:
+        import csv
+        import json
+
+        total = len(self._nodes)
+        try:
+            with open(self._out_path, "w", encoding="utf-8", newline="") as fh:
+                if self._fmt == "json":
+                    fh.write("[\n")
+                    first = True
+                    for i, node in enumerate(self._nodes):
+                        if self._cancel:
+                            return self._abort()
+                        if i % 250 == 0:
+                            self.signals.progress.emit(i, total)
+                        rec = self._record(node)
+                        fh.write(("" if first else ",\n")
+                                 + json.dumps(rec, ensure_ascii=False))
+                        first = False
+                    fh.write("\n]\n")
+                else:  # csv
+                    fieldnames = [
+                        self._headers[c] if c < len(self._headers)
+                        else f"Column {c+1}" for c in self._cols]
+                    writer = csv.DictWriter(fh, fieldnames=fieldnames)
+                    writer.writeheader()
+                    for i, node in enumerate(self._nodes):
+                        if self._cancel:
+                            return self._abort()
+                        if i % 250 == 0:
+                            self.signals.progress.emit(i, total)
+                        writer.writerow(self._record(node))
+        except BaseException as exc:  # noqa: BLE001 - reported to the UI
+            self._unlink()
+            self.signals.failed.emit(str(exc))
+            return
+        self.signals.progress.emit(total, total)
+        self.signals.done.emit(self._out_path)
+
+    def _abort(self):
+        self._unlink()
+        self.signals.cancelled.emit()
+
+    def _unlink(self) -> None:
+        import os
+        try:
+            os.unlink(self._out_path)
+        except OSError:
+            pass
 
 
 class _ColumnFilterDialog(QDialog):
@@ -405,7 +533,7 @@ class CsvTableView(QWidget):
         allrow.addWidget(hide_all)
         v.addLayout(allrow)
 
-        self._col_list = QListWidget()
+        self._col_list = _ColumnList()
         self._col_list.setObjectName("csvColList")
         for col, name in enumerate(self.model.headers()):
             item = QListWidgetItem(name or f"Column {col + 1}")
@@ -574,38 +702,69 @@ class CsvTableView(QWidget):
         )
         return [c for c in order if not self.view.isColumnHidden(c)]
 
-    def _filtered_records(self) -> List[dict]:
-        """Rows currently passing all filters, as dicts of the visible columns
-        in display order."""
+    def _export(self, fmt: str) -> None:
+        """Export the visible/filtered table to a new tab (CSV or JSON).
+        Streams on a background thread with a progress dialog so large tables
+        don't freeze the app."""
+        import tempfile
+
+        from openxmljson.app import _JobProgressDialog
+
+        window = self.window()
+        if not hasattr(window, "open_path"):
+            return
+
         cols = self._visible_columns()
         headers = self.model.headers()
-        out = []
+        # Precompute the source record nodes in the current (filtered/sorted)
+        # display order — cheap; the heavy reconstruct happens in the worker.
+        nodes = []
         for prow in range(self.proxy.rowCount()):
             src = self.proxy.mapToSource(self.proxy.index(prow, 0)).row()
-            rec = {}
-            for c in cols:
-                key = headers[c] if c < len(headers) else f"Column {c + 1}"
-                rec[key] = self.model.cell_text(src, c)
-            out.append(rec)
-        return out
+            node = self.model.record_node(src)
+            if node is not None:
+                nodes.append(node)
 
-    def _export(self, fmt: str) -> None:
-        window = self.window()
-        if not hasattr(window, "_open_text_as_tab"):
-            return
-        records = self._filtered_records()
-        if fmt == "json":
-            import json
+        suffix = ".json" if fmt == "json" else ".csv"
+        fd, out_path = tempfile.mkstemp(suffix=suffix, prefix="oxj_")
+        import os as _os
+        _os.close(fd)
 
-            content = json.dumps(records, indent=2, ensure_ascii=False)
-            window._open_text_as_tab(content, ".json")
-        else:  # csv
-            import csv
-            import io
+        prog = _JobProgressDialog(
+            "Export — opening in new tab",
+            f"Exporting {len(nodes):,} rows to {fmt.upper()}…",
+            window)
+        task = _CsvExportTask(
+            self.model._source, nodes, cols, headers, fmt, out_path)
+        task.setAutoDelete(False)
+        self._export_prog = prog       # keep refs alive across the async hop
+        self._export_task = task
 
-            buf = io.StringIO()
-            fieldnames = list(records[0].keys()) if records else []
-            writer = csv.DictWriter(buf, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(records)
-            window._open_text_as_tab(buf.getvalue(), ".csv")
+        def cleanup():
+            self._export_prog = None
+            self._export_task = None
+            prog.finish()
+
+        def on_done(path):
+            cleanup()
+            if hasattr(window, "_temp_files"):
+                window._temp_files.add(path)
+            window.open_path(path)
+
+        def on_failed(msg):
+            cleanup()
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(window, "Export failed", msg)
+
+        def on_cancelled():
+            cleanup()
+
+        task.signals.progress.connect(prog.set_progress)
+        task.signals.done.connect(on_done)
+        task.signals.failed.connect(on_failed)
+        task.signals.cancelled.connect(on_cancelled)
+        prog.canceled.connect(task.cancel)
+        prog.set_progress(0, len(nodes))
+        prog.show()
+        QApplication.processEvents()   # paint the dialog before the worker runs
+        QThreadPool.globalInstance().start(task)

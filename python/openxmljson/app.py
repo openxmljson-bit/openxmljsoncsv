@@ -57,20 +57,48 @@ from openxmljson.tree import EXPAND_ALL_CONFIRM_NODES, EXPAND_ALL_MAX_NODES
 
 FILE_FILTER = (
     "Documents (*.json *.jsonl *.ndjson *.xml *.csv *.tsv *.tab "
-    "*.txt *.js *.log);;"
+    "*.txt *.js *.log *.py);;"
     "All files (*)"
 )
 
 #: Extensions opened as read-only plain text (no structural index/tree).
-TEXT_EXTS = (".txt", ".js", ".log")
+TEXT_EXTS = (".txt", ".js", ".log", ".py")
 
 #: Extensions the engine parses as non-JSON structured formats; anything else
 #: (.json/.jsonl/.ndjson and unknown) is treated as JSON.
 _NON_JSON_EXTS = (".xml", ".csv", ".tsv", ".tab")
 
+
+def _looks_ndjson(path: str) -> bool:
+    """True if the file's first few non-empty lines are each a JSON object/array
+    — i.e. it's an NDJSON (JSON-per-line) log rather than plain text. Reads only
+    the first handful of lines, so it's cheap even on huge files."""
+    import json
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            checked = 0
+            for line in fh:
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    obj = json.loads(s)
+                except ValueError:
+                    return False
+                if not isinstance(obj, (dict, list)):
+                    return False
+                checked += 1
+                if checked >= 3:
+                    return True
+            return checked > 0
+    except OSError:
+        return False
+
+
 SCOPES = ["All", "Keys", "Values", "Attributes"]
 
-#: Tab cap: every open tab keeps its node index resident (32 B/node), so
+#: Tab cap: every open tab keeps its node index resident (24 B/node), so
 #: a bound keeps memory predictable even with several huge files open.
 MAX_TABS = 20
 
@@ -96,8 +124,11 @@ def _fmt_size(n: int) -> str:
 #: placeholders so re-indexing a multi-GB file never blocks startup.
 RESTORE_AUTOLOAD_LIMIT = 256 * 1024 * 1024  # 256 MB
 
-#: Whole-document pretty-JSON export guard (bytes).
-PRETTY_EXPORT_LIMIT = 64 * 1024 * 1024
+#: Whole-document reformat/convert guard (bytes). These operations reconstruct
+#: the entire document into Python objects and re-serialize it in memory, which
+#: costs several times the file size in RAM — so it's capped. Per-node export
+#: (right-click ▸ Export Value As) is unbounded.
+PRETTY_EXPORT_LIMIT = 1024 * 1024 * 1024   # 1 GB
 
 MAX_RECENT = 10
 
@@ -1741,8 +1772,14 @@ class MainWindow(QMainWindow):
         # machinery, which is about the structural index) entirely.
         ext = os.path.splitext(path)[1].lower()
         if ext in TEXT_EXTS:
-            self._open_text_view(path)
-            return
+            # A .log whose lines are JSON objects is really an NDJSON log —
+            # open it through the engine (structured tree/table, lazy for huge
+            # files) instead of the plain-text viewer.
+            if ext == ".log" and _looks_ndjson(path):
+                pass  # fall through to the structural open below
+            else:
+                self._open_text_view(path)
+                return
         # JSON size gate (free edition): cap JSON — not XML/CSV/TSV — at
         # JSON_MAX_BYTES. Disabled in the premium edition (edition.py).
         if ENFORCE_SIZE_GATE and JSON_MAX_BYTES and ext not in _NON_JSON_EXTS:
@@ -1815,7 +1852,9 @@ class MainWindow(QMainWindow):
         )
         self.tabs.setCurrentIndex(index)
         self._update_tab_marks()
-        self._bump_file_type(doc.format_name())
+        # Count .log files as LOG even when opened structurally (NDJSON logs).
+        self._bump_file_type(
+            "LOG" if path.lower().endswith(".log") else doc.format_name())
         self._update_central()
         self._remember_recent(path)
         self._watch(path)
@@ -1851,7 +1890,11 @@ class MainWindow(QMainWindow):
         )
         self.tabs.setCurrentIndex(index)
         self._update_tab_marks()
-        self._bump_file_type("JS" if path.lower().endswith(".js") else "TXT")
+        low = path.lower()
+        self._bump_file_type(
+            "LOG" if low.endswith(".log")
+            else "JS" if low.endswith(".js")
+            else "PY" if low.endswith(".py") else "TXT")
         self._update_central()
         self._remember_recent(path)
         self._watch(path)
@@ -2214,8 +2257,8 @@ class MainWindow(QMainWindow):
                 self,
                 "File too large",
                 "Pretty-JSON export re-serializes the whole document in "
-                "memory and is limited to 64 MB. Use Export Data As ▸ "
-                "Raw Copy for large files.",
+                "memory and is limited to 1 GB. Use Export Data As ▸ "
+                "Raw Copy for larger files.",
             )
             return
         path, _ = QFileDialog.getSaveFileName(
@@ -2393,7 +2436,7 @@ class MainWindow(QMainWindow):
                 self,
                 "File too large",
                 "Format conversion re-serializes the whole document in "
-                "memory and is limited to 64 MB. Convert a selected node "
+                "memory and is limited to 1 GB. Convert a selected node "
                 "instead (right-click ▸ Export Value As).",
             )
             return None
@@ -2560,22 +2603,15 @@ class MainWindow(QMainWindow):
             4000,
         )
 
-    #: jq reconstructs the whole document, so it's a small/medium-doc feature.
-    JQ_MAX_NODES = 200_000
-
     def _sync_jq_controls(self) -> None:
-        """Show the jq bar only for eager documents under the node-count cap,
-        and restore this tab's own jq filter (jq_text is per-tab, so it survives
-        opening a result tab and is gone once the tab is closed)."""
+        """Show the jq bar for any eager (in-memory) document — jq reconstructs
+        the whole document, so it's gated only by lazy loading, not node count.
+        Restores this tab's own jq filter (jq_text is per-tab)."""
         if not hasattr(self, "_jq_toolbar"):
             return
         view = self.current_view()
-        ok = view is not None and view.doc is not None and getattr(view, "eager", False)
-        if ok:
-            try:
-                ok = view.doc.node_count() <= self.JQ_MAX_NODES
-            except Exception:
-                ok = False
+        ok = (view is not None and view.doc is not None
+              and getattr(view, "eager", False))
         self._jq_toolbar.setVisible(ok)
         if hasattr(self, "jq_edit"):
             self.jq_edit.blockSignals(True)

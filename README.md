@@ -61,8 +61,9 @@ Pure-Rust GUI instead: `cargo run -p oxj-gui --release`
   follows a growing file, parsing only the newly appended lines each tick
   (the parsed prefix is never re-read) and appending them as new rows —
   memory and work per tick track the appended bytes, not the file size.
-- Query bar (View ▸ Query Bar, Ctrl+Q): JSONPath for JSON/CSV
-  (`$.store.items[*].name`, `$..price`, `[*]`, `[-1]`) and XPath for XML
-  (`//item/@id`, `/catalog/item[2]/title`, `text()`, `*`). Results filter
-  the tree to the matching rows; evaluated over the index with traversal
-  caps so it stays responsive on large files.
+- Path queries via the Filter box: type a path to filter the tree to the
+  matching rows — JSONPath for JSON/CSV (`$.store.items[*].name`, `$..price`,
+  `[*]`, `[-1]`) and XPath for XML (`//item/@id`, `/catalog/item[2]/title`,
+  `text()`, `*`). The one Filter box also accepts plain text (row substring)
+  and `key:value` (field equals); it auto-detects which you typed. Evaluated
+  over the index with traversal caps so it stays responsive on large files.

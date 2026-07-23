@@ -17,7 +17,7 @@ Mapping to the original prompt set (SPEC §17) and to this repository.
 | 12 | XML-aware scoped search | Implemented | `search.rs` (SearchScope) |
 | + | CSV/TSV reading (added on request) | Implemented | `csv.rs` |
 | + | Python+Rust hybrid packaging (added on request) | Implemented | pyproject.toml, packaging/, docs/BUILD.md |
-| + | Query language over the index (JSONPath/XPath) | Implemented | `query.py`, Query bar (Ctrl+Q) |
+| + | Query language over the index (JSONPath/XPath) | Implemented | `query.py`, merged into the Filter box (plain / key:value / $.path / //xpath) |
 | + | On-demand (lazy) indexing for very large files | Implemented | `lazy.rs`, `lazy_csv.rs`, `lazy_xml.rs`, `LazyDocument` |
 
 ## Functional requirements (SPEC §3.1)

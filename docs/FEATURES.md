@@ -36,8 +36,7 @@ Documents render as a uniform, virtualized tree — objects, arrays, elements an
 Three complementary ways to find things — all backed by the parallel native search.
 
 - **Find** _(Ctrl+F, F3 / Shift+F3)_ — Regex or literal search (“Aa” match case, “.*” regex), scoped to All / Keys / Values / Attributes; matched text is chip-highlighted and ▲ ▼ step through hits.
-- **Filter box** — Hide every row except those that match (and their parents) — live as you type.
-- **Query bar** _(Ctrl+Q)_ — JSONPath for JSON/CSV ($.store.items[*].name, $..price, [*], [-1]) and XPath for XML (//item/@id, /catalog/item[2]/title, text(), *). Combine several paths with '|' to select multiple fields at once ($.a.name | $.a.price). Results filter the tree.
+- **Filter box** — Hide every row except those that match (and their parents). One box, three input styles it auto-detects: plain text (row substring), `key:value` (field equals), or a path query — JSONPath for JSON/CSV ($.store.items[*].name, $..price, [*], [-1]) and XPath for XML (//item/@id, /catalog/item[2]/title, text(), *). Combine several paths with '|' to select multiple fields at once ($.a.name | $.a.price). Press Enter to apply.
 
 ## CSV tools
 

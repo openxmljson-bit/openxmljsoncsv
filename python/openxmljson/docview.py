@@ -269,14 +269,26 @@ class DocumentView(QWidget):
         self.text_view.set_style(self._style)
         self.text_view.setPlainText(text)
 
-        # Attach (or detach) JavaScript syntax highlighting for .js files.
+        # Attach (or detach) syntax highlighting: JavaScript for .js, log
+        # colorization (levels/timestamps) for .log.
         if self._text_highlighter is not None:
             self._text_highlighter.setDocument(None)
             self._text_highlighter = None
-        if path.lower().endswith(".js"):
+        low = path.lower()
+        if low.endswith(".js"):
             from openxmljson.codeview import JsHighlighter
 
             self._text_highlighter = JsHighlighter(
+                self.text_view.document(), self._style)
+        elif low.endswith(".log"):
+            from openxmljson.codeview import LogHighlighter
+
+            self._text_highlighter = LogHighlighter(
+                self.text_view.document(), self._style)
+        elif low.endswith(".py"):
+            from openxmljson.codeview import PythonHighlighter
+
+            self._text_highlighter = PythonHighlighter(
                 self.text_view.document(), self._style)
 
         self._stack.setCurrentWidget(self.text_view)

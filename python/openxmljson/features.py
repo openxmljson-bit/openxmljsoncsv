@@ -62,12 +62,12 @@ FEATURE_SECTIONS = [
              "Attributes; matched text is chip-highlighted and ▲ ▼ "
              "step through hits.", "Ctrl+F, F3 / Shift+F3"),
             ("Filter box", "Hide every row except those that match (and "
-             "their parents) — live as you type.", ""),
-            ("Query bar", "JSONPath for JSON/CSV ($.store.items[*].name, "
-             "$..price, [*], [-1]) and XPath for XML (//item/@id, "
-             "/catalog/item[2]/title, text(), *). Combine several paths "
-             "with '|' to select multiple fields at once "
-             "($.a.name | $.a.price). Results filter the tree.", "Ctrl+Q"),
+             "their parents). One box, auto-detected input: plain text "
+             "(row substring), key:value (field equals), or a path query — "
+             "JSONPath for JSON/CSV ($.store.items[*].name, $..price, [*], "
+             "[-1]) and XPath for XML (//item/@id, /catalog/item[2]/title, "
+             "text(), *). Combine several paths with '|' "
+             "($.a.name | $.a.price). Press Enter to apply.", ""),
         ],
     ),
     (

@@ -1,4 +1,4 @@
-//! The structural index: a flat array of fixed-size 32-byte node records
+//! The structural index: a flat array of fixed-size 24-byte node records
 //! holding byte offsets into the mapping rather than copied data (SPEC §5).
 
 /// "No such node" link sentinel.

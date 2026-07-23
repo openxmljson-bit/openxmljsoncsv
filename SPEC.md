@@ -79,7 +79,7 @@ states the design intent and the mechanism rather than a marketing figure.
 | ID | Requirement |
 |----|-------------|
 | N1 | Memory proportional to working set, not file size (memory-mapped I/O). |
-| N2 | Structural index cost bounded and predictable: exactly 32 bytes per node. |
+| N2 | Structural index cost bounded and predictable: exactly 24 bytes per node. |
 | N3 | No stack recursion proportional to document nesting depth. |
 | N4 | UI renders only visible rows; frame cost independent of document size. |
 | N5 | Search parallelized across CPU cores. |
@@ -105,7 +105,7 @@ states the design intent and the mechanism rather than a marketing figure.
                     │              Engine — crates/oxj-core            │
                     │                                                  │
                     │  mapping.rs   mmap (Arc<Mmap>), zero-copy slices │
-                    │  index.rs     Node (32 B) + Index + IndexBuilder │
+                    │  index.rs     Node (24 B) + Index + IndexBuilder │
                     │  json.rs ─┐                                      │
                     │  xml.rs  ─┼─▶ build one unified structural Index │
                     │  csv.rs ─┘                                       │
@@ -161,36 +161,40 @@ binding exposes the name↔code map via `node_kind_names()`):
 
 `is_container()` is true for `Document`, `Object`, `Array`, `Key`, `ElementOpen`.
 
-### 5.2 `Node` (exactly 32 bytes)
+### 5.2 `Node` (exactly 24 bytes)
 
 ```rust
 #[repr(C)]
 struct Node {
-    offset: u64,        // absolute byte offset of the token in the mapping
     len: u32,           // byte length of the raw token window
     parent: u32,        // parent node index, or NIL (u32::MAX)
     first_child: u32,   // first child index, or NIL
     next_sibling: u32,  // next sibling index, or NIL
+    offset_lo: u32,     // low 32 bits of the absolute byte offset
     kind: NodeKind,     // 1 byte
-    _pad: [u8; 3],
+    offset_hi: u8,      // high 8 bits of the offset (offset = hi<<32 | lo)
 }
-// compile-time assert: size_of::<Node>() == 32
+// compile-time assert: size_of::<Node>() == 24
 ```
 
 Rationale and consequences:
 
 - No node owns heap data; a value is read by slicing the mapping at
-  `offset .. offset+len`. Strings are never copied until a visible row is drawn.
+  `offset .. offset+len` (offset = `offset_hi << 32 | offset_lo`). Strings are
+  never copied until a visible row is drawn.
+- The offset is split into a 32-bit low word + 8-bit high word so the struct's
+  alignment drops from 8 (a `u64` field) to 4 and the trailing padding
+  disappears — 24 bytes instead of 32, a 25% smaller index.
+- The split offset supports files up to 2^40 (1 TiB), far beyond the ~10 GB
+  target. `len` is `u32`, capping a single token at 4 GiB (a pathological case
+  the parsers flag rather than truncate).
 - Children form a singly linked list via `first_child`/`next_sibling`, built in
   document order, so a parse is a single forward pass.
-- `u64` offset supports files well beyond 4 GB. `len` is `u32`, capping a single
-  token at 4 GiB (a pathological case the parsers flag rather than truncate).
 - Node indices are `u32`, capping one document at ~4.29 billion nodes — far above
   the 130M design point — while keeping links at 4 bytes.
-- Memory: the index costs `32 × node_count`. For 130M nodes that is ~4 GB. This
+- Memory: the index costs `24 × node_count` (e.g. ~3.5 GB for 145M nodes). This
   is deliberately separate from the 1:1 file mapping and is documented as the
-  bounded cost of random-access navigation. A packed ~20-byte layout is a
-  future option.
+  bounded cost of random-access navigation.
 
 ### 5.3 `Index` and `IndexBuilder`
 
@@ -439,7 +443,7 @@ to a Python exception rather than aborting the interpreter.
 ## 13. Performance characteristics
 
 Memory is dominated by (a) the OS page cache for touched file regions (bounded by
-the working set, not file size) and (b) the index at 32 bytes/node. Parsing is a
+the working set, not file size) and (b) the index at 24 bytes/node. Parsing is a
 single linear pass with no per-token allocation. Search is embarrassingly
 parallel and cache-friendly. UI cost per frame is proportional to visible rows
 (~40), not document size. The native/Python boundary is crossed only for visible

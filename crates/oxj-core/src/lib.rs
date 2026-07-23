@@ -2,7 +2,7 @@
 //!
 //! A zero-copy, memory-mapped structural index for very large JSON, XML and
 //! CSV/TSV documents. The file is mapped once, parsed once into a flat array
-//! of fixed-size (32-byte) node records holding byte offsets, and every
+//! of fixed-size (24-byte) node records holding byte offsets, and every
 //! subsequent operation (tree navigation, display, search, export) works on
 //! those offsets. See SPEC.md at the repository root.
 

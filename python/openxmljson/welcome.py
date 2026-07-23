@@ -67,10 +67,10 @@ def _human_size(path: str) -> str:
 #: Feature boxes (icon, title, subtitle). All shown down the left side.
 FEATURES = [
     ("🔍", "Find Any", "Regex · scopes", "left"),
-    ("▤", "Filter Box", "Show matches", "left"),
-    ("λ", "Query Bar", "JSONPath · XPath", "left"),
+    ("▤", "Filter Box", "Text · key:value · path", "left"),
+    ("λ", "Path Query", "JSONPath · XPath", "left"),
     ("⤓", "Export", "JSON · XML · CSV", "left"),
-    ("❑", "Tabs UI", "Up to 12 files", "left"),
+    ("❑", "Tabs UI", "Up to 20 files", "left"),
     ("≣", "CSV Table", "Spreadsheet view", "left"),
     ("⟳", "Live Tail", "Follow appends", "left"),
     ("Σ", "Statistics", "Counts · min/max", "left"),
@@ -337,7 +337,7 @@ class WelcomeWidget(QWidget):
             return
         peak = max(counts.values())
         # Stable, familiar order; unknown formats appended.
-        order = ["JSON", "NDJSON", "XML", "CSV", "TSV", "TXT", "JS"]
+        order = ["JSON", "NDJSON", "XML", "CSV", "TSV", "TXT", "JS", "LOG", "PY"]
         keys = [k for k in order if k in counts] + [
             k for k in counts if k not in order
         ]

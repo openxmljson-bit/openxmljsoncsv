@@ -30,10 +30,12 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTabBar,
     QTabWidget,
@@ -237,6 +239,229 @@ class _OpenTask(QRunnable):
             doc, err = None, exc
         load_ms = (time.perf_counter() - t0) * 1000.0
         self._signals.done.emit(self._path, doc, err, load_ms)
+
+
+class _DeepDiveSignals(QObject):
+    progress = Signal(int, int)   # (current, total)
+    done = Signal(str)            # output path
+    failed = Signal(str)          # error message
+    cancelled = Signal()
+
+
+class _DeepDiveTask(QRunnable):
+    """Stream a field-projected copy of a document to ``out_path`` off the GUI
+    thread. Reconstructs one array element at a time (bounded memory), so it
+    scales to multi-GB files while the UI stays responsive."""
+
+    #: A single non-array root must be reconstructed whole, so it's capped.
+    OBJECT_LIMIT = 512 * 1024 * 1024   # 512 MB
+
+    def __init__(self, model, doc, selected, out_path):
+        super().__init__()
+        self.signals = _DeepDiveSignals()
+        self._model = model
+        self._doc = doc
+        self._selected = selected
+        self._out_path = out_path
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        import json
+
+        from openxmljson import project
+        from openxmljson.model import ARRAY
+
+        model, doc = self._model, self._doc
+        try:
+            root = doc.root()
+            kids = doc.child_nodes(root)
+            completed = True
+            with open(self._out_path, "w", encoding="utf-8") as fh:
+                if len(kids) == 1 and doc.kind(kids[0]) == ARRAY:
+                    completed = self._write_array(
+                        fh, doc.child_nodes(kids[0]), project)
+                elif len(kids) > 1:   # many top-level records (NDJSON-style)
+                    completed = self._write_array(fh, kids, project)
+                else:                 # single object / scalar root
+                    if doc.file_bytes() > self.OBJECT_LIMIT:
+                        raise ValueError(
+                            "Deep Dive streams large array documents, but this "
+                            "file is a single object larger than 512 MB. Dive "
+                            "into an inner array instead.")
+                    value = model.reconstruct(kids[0]) if kids else None
+                    fh.write(json.dumps(
+                        project.project_value(value, self._selected),
+                        indent=2, ensure_ascii=False))
+        except BaseException as exc:  # noqa: BLE001 - reported to the UI
+            self._unlink()
+            self.signals.failed.emit(str(exc))
+            return
+        if not completed:
+            self._unlink()
+            self.signals.cancelled.emit()
+            return
+        self.signals.done.emit(self._out_path)
+
+    def _write_array(self, fh, nodes, project) -> bool:
+        import json
+
+        total = len(nodes)
+        self.signals.progress.emit(0, total)
+        fh.write("[\n")
+        first = True
+        for i, node in enumerate(nodes):
+            if self._cancel:
+                return False
+            if i % 250 == 0:
+                self.signals.progress.emit(i, total)
+            pruned = project.project_value(
+                self._model.reconstruct(node), self._selected)
+            fh.write(("" if first else ",\n")
+                     + json.dumps(pruned, ensure_ascii=False))
+            first = False
+        fh.write("\n]\n")
+        self.signals.progress.emit(total, total)
+        return True
+
+    def _unlink(self) -> None:
+        try:
+            os.unlink(self._out_path)
+        except OSError:
+            pass
+
+
+class _SchemaSignals(QObject):
+    done = Signal(object)   # inferred schema dict
+    failed = Signal(str)
+
+
+class _SchemaTask(QRunnable):
+    """Infer a document's schema (the Deep Dive field list) off the GUI thread
+    so the progress dialog can animate while it streams the file."""
+
+    def __init__(self, model):
+        super().__init__()
+        self.signals = _SchemaSignals()
+        self._model = model
+        self.abandoned = False   # set if the user cancels; result is ignored
+
+    def run(self) -> None:
+        try:
+            from openxmljson import schemagen
+            schema = schemagen.infer_schema_from_model(self._model)
+        except BaseException as exc:  # noqa: BLE001 - reported to the UI
+            self.signals.failed.emit(str(exc))
+            return
+        self.signals.done.emit(schema)
+
+
+class _JobProgressDialog(QDialog):
+    """A large, centered progress dialog: bold title, monospace subtitle
+    (e.g. the file path), a gradient rounded bar, a status line, an optional
+    green note, and a centered Cancel button. Used for the Deep Dive field-scan
+    (indeterminate) and the projection (determinate)."""
+
+    canceled = Signal()
+
+    def __init__(self, title, status, parent=None, subtitle="", note=""):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumWidth(560)
+        self._canceled = False
+        center = Qt.AlignmentFlag.AlignCenter
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(40, 34, 40, 30)
+        lay.setSpacing(16)
+
+        self._title = QLabel(title)
+        self._title.setAlignment(center)
+        self._title.setStyleSheet("font-size: 22px; font-weight: 700;")
+        lay.addWidget(self._title)
+
+        self._subtitle = QLabel(subtitle)
+        self._subtitle.setAlignment(center)
+        self._subtitle.setWordWrap(True)
+        self._subtitle.setStyleSheet(
+            "font-family: monospace; font-size: 13px; color: palette(mid);")
+        self._subtitle.setVisible(bool(subtitle))
+        lay.addWidget(self._subtitle)
+
+        self._bar = QProgressBar()
+        self._bar.setFixedHeight(16)
+        self._bar.setTextVisible(False)
+        self._bar.setRange(0, 0)   # start indeterminate (animated)
+        lay.addWidget(self._bar)
+
+        self._status = QLabel(status)
+        self._status.setAlignment(center)
+        self._status.setStyleSheet(
+            "font-family: monospace; font-size: 13px; color: palette(mid);")
+        lay.addWidget(self._status)
+
+        self._note = QLabel(note)
+        self._note.setAlignment(center)
+        self._note.setWordWrap(True)
+        self._note.setStyleSheet(
+            "font-size: 13px; font-weight: 600; color: #4ADE80;")
+        self._note.setVisible(bool(note))
+        lay.addWidget(self._note)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self._cancel = QPushButton("Cancel")
+        self._cancel.setMinimumWidth(120)
+        self._cancel.clicked.connect(self._do_cancel)
+        row.addWidget(self._cancel)
+        row.addStretch(1)
+        lay.addSpacing(4)
+        lay.addLayout(row)
+
+        self._bar.setStyleSheet(
+            "QProgressBar { border: none; border-radius: 8px;"
+            " background: rgba(128,128,128,0.18); }"
+            " QProgressBar::chunk { border-radius: 8px;"
+            " background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+            " stop:0 #3B82F6, stop:1 #4ADE80); }")
+
+    def set_status(self, text: str) -> None:
+        self._status.setText(text)
+
+    def set_note(self, text: str) -> None:
+        self._note.setText(text)
+        self._note.setVisible(bool(text))
+
+    def set_progress(self, current: int, total: int) -> None:
+        if total <= 0:
+            self._bar.setRange(0, 0)       # indeterminate (animated)
+        else:
+            self._bar.setRange(0, total)
+            self._bar.setValue(current)
+            self._status.setText(f"{current:,} of {total:,} records")
+
+    def _do_cancel(self) -> None:
+        if self._canceled:
+            return
+        self._canceled = True
+        self._cancel.setEnabled(False)
+        self._cancel.setText("Cancelling…")
+        self.canceled.emit()
+
+    def was_canceled(self) -> bool:
+        return self._canceled
+
+    def finish(self) -> None:
+        """Programmatically dismiss the dialog (job completed)."""
+        self.accept()
+
+    # Esc / window-close: cancel the running job, then actually dismiss.
+    def reject(self):  # noqa: N802
+        self._do_cancel()
+        super().reject()
 
 
 def _clipboard_suffix(text: str):
@@ -1212,6 +1437,8 @@ class MainWindow(QMainWindow):
             tools_menu, "Format JavaScript", self.format_js_document)
         self._jsfmt_action.setEnabled(False)
         tools_menu.addSeparator()
+        self._action(tools_menu, "Deep Dive (select fields) → New Tab…",
+                     self.deep_dive)
         self._action(tools_menu, "Generate JSON Schema → New Tab",
                      self.generate_schema)
         self._action(tools_menu, "Validate Against JSON Schema…",
@@ -2361,6 +2588,105 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"jq produced {len(outputs)} result(s) in a new tab.", 4000)
 
+    def deep_dive(self) -> None:
+        """Tools ▸ Deep Dive — infer the document's fields from its schema, let
+        the user pick which to keep, and open a pruned copy in a new tab. Both
+        the field-scan and the projection run off-thread with a progress bar."""
+        view = self.current_view()
+        if view is None or view.doc is None or view.model is None:
+            self.statusBar().showMessage("Open a file first.")
+            return
+        if view.model.format() != "JSON":
+            self.statusBar().showMessage(
+                "Deep Dive applies to JSON documents.", 4000)
+            return
+
+        # Phase 1: scan the fields (schema) on a worker, with a busy bar.
+        prog = _JobProgressDialog(
+            "Deep Dive", "Scanning fields in the document…", self,
+            subtitle=view.path or "")
+        task = _SchemaTask(view.model)
+        task.setAutoDelete(False)        # keep signals alive until delivered
+        self._dd_prog = prog             # keep refs alive across the async hop
+        self._dd_schema_task = task
+        task.signals.done.connect(
+            lambda schema: self._dd_on_schema(view, prog, task, schema))
+        task.signals.failed.connect(
+            lambda msg: self._dd_finish(prog, error=("Cannot read fields", msg)))
+        prog.canceled.connect(lambda: setattr(task, "abandoned", True))
+        prog.canceled.connect(lambda: self._dd_finish(prog, cancelled=True))
+        prog.show()
+        QApplication.processEvents()   # paint the dialog before the worker runs
+        QThreadPool.globalInstance().start(task)
+
+    def _dd_finish(self, prog, error=None, cancelled=False) -> None:
+        """Tear down a Deep Dive progress dialog and clear kept references."""
+        self._dd_prog = None
+        self._dd_schema_task = None
+        self._dd_proj_task = None
+        prog.finish()
+        if cancelled:
+            self.statusBar().showMessage("Deep Dive cancelled.", 3000)
+        elif error is not None:
+            QMessageBox.warning(self, error[0], error[1])
+
+    def _dd_on_schema(self, view, prog, task, schema) -> None:
+        from openxmljson import project
+        from openxmljson.deepdive import DeepDiveDialog
+
+        if task.abandoned:
+            return   # user cancelled during the scan
+        prog.finish()
+        self._dd_prog = None
+        self._dd_schema_task = None
+
+        tree = project.schema_field_tree(schema)
+        if not tree["children"]:
+            self.statusBar().showMessage("No selectable fields found.", 4000)
+            return
+        dlg = DeepDiveDialog(tree, self)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+        selected = dlg.selected_paths()
+        if not selected:
+            return
+        self._dd_start_projection(view, selected)
+
+    def _dd_start_projection(self, view, selected) -> None:
+        import tempfile
+
+        fd, out_path = tempfile.mkstemp(suffix=".json", prefix="oxj_")
+        os.close(fd)
+
+        prog = _JobProgressDialog(
+            "Deep Dive", "Building projection…", self,
+            subtitle=view.path or "")
+        task = _DeepDiveTask(view.model, view.doc, selected, out_path)
+        task.setAutoDelete(False)        # keep signals alive until delivered
+        self._dd_prog = prog
+        self._dd_proj_task = task
+        n_fields = len(selected)
+
+        task.signals.progress.connect(prog.set_progress)
+        task.signals.done.connect(
+            lambda path: self._dd_projection_done(prog, path, n_fields))
+        task.signals.failed.connect(
+            lambda msg: self._dd_finish(
+                prog, error=("Cannot build projection", msg)))
+        task.signals.cancelled.connect(
+            lambda: self._dd_finish(prog, cancelled=True))
+        prog.canceled.connect(task.cancel)
+        prog.show()
+        QApplication.processEvents()   # paint the dialog before the worker runs
+        QThreadPool.globalInstance().start(task)
+
+    def _dd_projection_done(self, prog, path, n_fields) -> None:
+        self._dd_finish(prog)
+        self._temp_files.add(path)   # deleted on app close
+        self.open_path(path)
+        self.statusBar().showMessage(
+            f"Deep Dive: kept {n_fields} field(s) in a new tab.", 4000)
+
     def generate_schema(self) -> None:
         """Tools ▸ Generate JSON Schema — infer a draft-07 schema from the
         current document and open it in a new tab. Streams over the node index
@@ -3054,6 +3380,14 @@ def run(argv=None) -> int:
     _set_macos_process_name()
     _suppress_macos_edit_menu_extras()  # before the Edit menu is realized
     app = _App(argv)
+    # On macOS, Qt's native icon engine (QAppleIconEngine) resolves standard
+    # icons — including the QLineEdit clear button — as SF Symbols, which
+    # crashes (EXC_BREAKPOINT in NSImageSymbolRepProvider) on recent macOS.
+    # The Fusion style draws its own icons and avoids that engine entirely.
+    if sys.platform == "darwin":
+        from PySide6.QtWidgets import QStyleFactory
+        if "Fusion" in QStyleFactory.keys():
+            app.setStyle("Fusion")
     app.setApplicationName("OPENXMLJSON")
     app.setApplicationDisplayName("OPENXMLJSON")
     app.setDesktopFileName("openxmljson")

@@ -87,11 +87,27 @@ class DeepDiveDialog(QDialog):
 
         self._tree = _FieldTree()
         self._tree.setHeaderHidden(True)
+        from openxmljson.checkboxstyle import indicator_qss
+        # Selection colors from the app theme (same approach the CSV table uses,
+        # which reads correctly): explicit background + text so Fusion doesn't
+        # paint the selected text white and hide it on the light-blue highlight.
+        sel_bg, sel_fg = "#094771", "#d8dee6"
+        style = getattr(parent, "_style", None)
+        if style is not None:
+            try:
+                sel_bg = style.selection_bg.name()
+                sel_fg = style.key.name()
+            except Exception:
+                pass
+        self._tree.setStyleSheet(
+            indicator_qss("QTreeWidget")
+            + f" QTreeWidget::item:selected {{ background: {sel_bg};"
+            f" color: {sel_fg}; }}")
         self._tree.itemChanged.connect(self._on_item_changed)
         lay.addWidget(self._tree, 1)
 
         self._build_items(field_tree)
-        self._tree.expandToDepth(0)
+        self._tree.expandAll()
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok

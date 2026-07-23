@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from openxmljson.checkboxstyle import indicator_qss
 from openxmljson.csvtable import FILTER_OPS, RecordFilterProxy, RecordTableModel
 
 
@@ -393,6 +394,7 @@ class CsvTableView(QWidget):
             return color.name() if color is not None else fallback
 
         dark = getattr(style, "dark", True) if style is not None else True
+        window_bg = hex_of("window_bg", "#252526")
         view_bg = hex_of("view_bg", "#1e1e1e")
         alt_bg = hex_of("view_alt_bg", "#262728")
         text = hex_of("key", "#d8dee6")
@@ -423,13 +425,35 @@ class CsvTableView(QWidget):
             dis_bg, dis_fg = "#eceef1", "#a8adb4"
 
         self.setStyleSheet(f"""
+            QFrame#csvColPanel {{
+                background: {window_bg};
+                border-right: 1px solid {border};
+            }}
+            QLineEdit#csvColSearch {{
+                background: {view_bg};
+                color: {text};
+                border: 1px solid {border};
+                border-radius: 4px;
+                padding: 4px 6px;
+            }}
+            QListWidget#csvColList {{
+                background: {view_bg};
+                color: {text};
+                border: 1px solid {border};
+                border-radius: 4px;
+            }}
+            QListWidget#csvColList::item {{ padding: 2px 4px; }}
+            QListWidget#csvColList::item:selected {{
+                background: {sel};
+                color: {text};
+            }}
             QTableView {{
                 background: {view_bg};
                 alternate-background-color: {alt_bg};
                 color: {text};
                 gridline-color: {grid};
                 selection-background-color: {sel};
-                selection-color: #ffffff;
+                selection-color: {text};
                 border: 1px solid {border};
             }}
             QHeaderView::section:horizontal {{
@@ -461,7 +485,7 @@ class CsvTableView(QWidget):
             }}
             QPushButton#csvColClose:hover {{
                 background: {sel};
-                color: #ffffff;
+                color: {text};
                 border-radius: 4px;
             }}
             QPushButton#csvBtnColumns, QPushButton#csvBtnFilter,
@@ -488,15 +512,13 @@ class CsvTableView(QWidget):
                 background: {dis_bg};
                 color: {dis_fg};
             }}
-        """)
+        """ + indicator_qss("QListWidget#csvColList"))
 
     # -- columns panel -------------------------------------------------------
     def _build_columns_panel(self) -> QFrame:
         panel = QFrame()
         panel.setObjectName("csvColPanel")
         panel.setFixedWidth(self.PANEL_WIDTH)
-        panel.setStyleSheet(
-            "#csvColPanel { border-right: 1px solid rgba(128,128,128,0.35); }")
         v = QVBoxLayout(panel)
         v.setContentsMargins(8, 8, 8, 8)
         v.setSpacing(6)
@@ -518,6 +540,7 @@ class CsvTableView(QWidget):
         v.addLayout(head)
 
         self._col_search = QLineEdit()
+        self._col_search.setObjectName("csvColSearch")
         self._col_search.setPlaceholderText("Filter columns…")
         self._col_search.setClearButtonEnabled(True)
         self._col_search.textChanged.connect(self._filter_column_list)

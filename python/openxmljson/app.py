@@ -394,6 +394,7 @@ class _JobProgressDialog(QDialog):
         self._bar = QProgressBar()
         self._bar.setFixedHeight(16)
         self._bar.setTextVisible(False)
+        self._bar.setFormat("")    # no %p% text (styled bars can still draw it)
         self._bar.setRange(0, 0)   # start indeterminate (animated)
         lay.addWidget(self._bar)
 
@@ -1982,6 +1983,22 @@ class MainWindow(QMainWindow):
                     os.unlink(path)
             except OSError:
                 pass
+
+    def temp_files_summary(self):
+        """(count, bytes) of reclaimable leftover temp files (excludes this
+        session's live temps)."""
+        return memory.temp_files_summary(keep=self._temp_files)
+
+    def free_temp_files(self) -> None:
+        """Delete leftover ``oxj_*`` temp files from crashes/force-quits and
+        report how much was freed."""
+        removed, freed = memory.clear_temp_files(keep=self._temp_files)
+        if removed:
+            self.statusBar().showMessage(
+                f"Freed {_fmt_size(freed)} from {removed} temp file(s).", 5000)
+        else:
+            self.statusBar().showMessage("No leftover temp files to clear.",
+                                         4000)
 
     def check_disk_space(self) -> None:
         """One-time startup nudge if the disk is already nearly full, so a

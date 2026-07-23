@@ -33,6 +33,66 @@ LAZY_EAGER_FRACTION = 0.35
 LAZY_AUTO_FRACTION = 0.70
 
 
+#: Prefix used for all of the app's temporary working files.
+TEMP_PREFIX = "oxj_"
+
+#: Skip temp files touched within this window so a second running instance's
+#: live temps are never counted or deleted.
+TEMP_MIN_AGE_SECONDS = 120
+
+
+def _temp_candidates(keep=()):
+    """(path, size) for the app's leftover ``oxj_*`` temp *files* — restricted
+    to our own prefix, excluding the current session's ``keep`` set and any
+    very recently modified file (another instance may be using it)."""
+    import glob
+    import os
+    import tempfile
+    import time
+
+    try:
+        root = tempfile.gettempdir()
+    except (OSError, FileNotFoundError):
+        return []
+    keep_real = {os.path.realpath(p) for p in keep}
+    cutoff = time.time() - TEMP_MIN_AGE_SECONDS
+    out = []
+    for path in glob.glob(os.path.join(root, TEMP_PREFIX + "*")):
+        try:
+            if not os.path.isfile(path):
+                continue   # skip directories (e.g. cached checkbox images)
+            if os.path.realpath(path) in keep_real:
+                continue
+            if os.path.getmtime(path) > cutoff:
+                continue
+            out.append((path, os.path.getsize(path)))
+        except OSError:
+            continue
+    return out
+
+
+def temp_files_summary(keep=()):
+    """(count, total_bytes) of reclaimable leftover temp files."""
+    files = _temp_candidates(keep)
+    return len(files), sum(sz for _, sz in files)
+
+
+def clear_temp_files(keep=()):
+    """Delete reclaimable leftover temp files. Returns (removed, freed_bytes)."""
+    import os
+
+    removed = 0
+    freed = 0
+    for path, size in _temp_candidates(keep):
+        try:
+            os.unlink(path)
+            removed += 1
+            freed += size
+        except OSError:
+            pass
+    return removed, freed
+
+
 def total_ram_bytes():
     """Total physical RAM in bytes, or None if it can't be determined."""
     try:  # macOS / Linux

@@ -271,6 +271,16 @@ class WelcomeWidget(QWidget):
         self._mem_rows = QVBoxLayout()
         self._mem_rows.setSpacing(10)
         mc.addLayout(self._mem_rows)
+        # "Free up temp files" link — shown only when leftovers exist.
+        self._mem_free = QPushButton("Free up temp files")
+        self._mem_free.setObjectName("memFree")
+        self._mem_free.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mem_free.setFlat(True)
+        self._mem_free.setToolTip(
+            "Delete leftover temporary working files from crashes/force-quits")
+        self._mem_free.clicked.connect(self._free_temp_files)
+        self._mem_free.setVisible(False)
+        mc.addWidget(self._mem_free)
         mc.addStretch(1)
         self._mem.hide()
 
@@ -375,7 +385,17 @@ class WelcomeWidget(QWidget):
             mode = str(self._window._settings.value("lazy_mode", "auto"))
         except Exception:
             mode = "auto"
-        for label, value in memory.summary_rows(mode=mode):
+        rows = list(memory.summary_rows(mode=mode))
+        # Leftover temp files (from crashes/force-quits) that can be reclaimed.
+        count, size = 0, 0
+        try:
+            count, size = self._window.temp_files_summary()
+        except Exception:
+            pass
+        rows.append((
+            "Temp files",
+            f"{count}  ~{memory.human_bytes(size)}" if count else "0"))
+        for label, value in rows:
             row = QWidget()
             row.setObjectName("statRow")
             hb = QHBoxLayout(row)
@@ -389,6 +409,15 @@ class WelcomeWidget(QWidget):
             hb.addStretch(1)
             hb.addWidget(val)
             self._mem_rows.addWidget(row)
+        self._mem_free.setVisible(count > 0)
+        if count:
+            self._mem_free.setText(
+                f"Free up {count} temp file(s) · {memory.human_bytes(size)}")
+
+    def _free_temp_files(self) -> None:
+        if hasattr(self._window, "free_temp_files"):
+            self._window.free_temp_files()
+        self._build_memory()
 
     # -- layout & animation ---------------------------------------------------
 
@@ -632,6 +661,12 @@ class WelcomeWidget(QWidget):
                 color: #3B82F6; font-size: 11px; font-weight: bold;
             }}
             #memRefresh:hover {{ color: #60A5FA; }}
+            #memFree {{
+                background: transparent; border: none; text-align: left;
+                color: #3B82F6; font-size: 12px; font-weight: bold;
+                padding: 2px 0;
+            }}
+            #memFree:hover {{ color: #60A5FA; }}
             #statName {{ color: {s.text.name()}; font-size: 13px; }}
             #statCount {{
                 color: {s.key.name()}; font-size: 13px; font-weight: bold;

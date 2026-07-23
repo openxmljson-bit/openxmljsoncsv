@@ -427,6 +427,8 @@ class DocumentView(QWidget):
             self.diagram.apply_style(style)
             if self.diagram_mode():
                 self.set_diagram_view(True)  # re-render with the new palette
+        if self._table_container is not None:
+            self._table_container.apply_style(style)
         if self.text_view is not None:
             self._style_text_view()
 

@@ -49,6 +49,9 @@ FILTER_EXPAND_LIMIT = 5_000
 #: node, so it is a small/medium-document feature. Above this node count it is
 #: not offered (a multi-GB file has far too many nodes to draw meaningfully).
 DIAGRAM_MAX_NODES = 50_000
+#: Per-node "Show as Flow Diagram" cap: a clicked node is diagrammable if its
+#: immediate child count is at or below this (decided at click time).
+DIAGRAM_NODE_MAX_CHILDREN = 5_000
 
 #: XML syntax highlighting runs a QSyntaxHighlighter over the whole markup,
 #: whose cost tracks the source text length — so it is gated by file size
@@ -891,6 +894,58 @@ class DocumentView(QWidget):
                 f"Diagram shows the first {len(graph.nodes):,} nodes "
                 f"(document is large)."
             )
+        else:
+            self.status_message.emit(f"Diagram: {len(graph.nodes):,} nodes")
+
+    def diagram_available_for_node(self, node_id) -> bool:
+        """A single node can be diagrammed if it's a container within the
+        per-node child cap — decided at click time from the node's own size, so
+        it works even inside a huge/lazy document."""
+        if self.doc is None or self.model is None:
+            return False
+        try:
+            return 0 < self.doc.child_count(node_id) <= DIAGRAM_NODE_MAX_CHILDREN
+        except Exception:
+            return False
+
+    def set_diagram_for_node(self, node_id, title: str = "") -> None:
+        """Show the flow diagram for just the clicked node's subtree. Gated by
+        that node's child count (not the whole document), so any small node can
+        be diagrammed even in a huge file."""
+        if self.doc is None or self.model is None:
+            return
+        try:
+            n = self.doc.child_count(node_id)
+        except Exception:
+            n = 0
+        if n == 0:
+            self.status_message.emit(
+                "Pick a container node (object or array) to diagram.")
+            return
+        if n > DIAGRAM_NODE_MAX_CHILDREN:
+            self.status_message.emit(
+                f"That node has {n:,} children — too many to diagram "
+                f"(limit {DIAGRAM_NODE_MAX_CHILDREN:,}). Pick a smaller node.")
+            return
+        try:
+            value = self.model.reconstruct(node_id)
+        except (RecursionError, MemoryError, ValueError):
+            self.status_message.emit("Couldn't build a diagram from this node.")
+            return
+
+        from openxmljson.diagram import build_graph
+        from openxmljson.diagramview import DiagramView
+
+        graph = build_graph(value, root_title=title or "")
+        if self.diagram is None:
+            self.diagram = DiagramView(self)
+            self._stack.addWidget(self.diagram)
+        self.diagram.apply_style(self._style)
+        self.diagram.set_graph(graph)
+        self._stack.setCurrentWidget(self.diagram)
+        if graph.truncated:
+            self.status_message.emit(
+                f"Diagram shows the first {len(graph.nodes):,} nodes.")
         else:
             self.status_message.emit(f"Diagram: {len(graph.nodes):,} nodes")
 

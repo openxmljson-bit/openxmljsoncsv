@@ -56,12 +56,13 @@ from openxmljson.styles import WATERMARK_TEXT, resolve, stylesheet
 from openxmljson.tree import EXPAND_ALL_CONFIRM_NODES, EXPAND_ALL_MAX_NODES
 
 FILE_FILTER = (
-    "Documents (*.json *.jsonl *.ndjson *.xml *.csv *.tsv *.tab *.txt *.js);;"
+    "Documents (*.json *.jsonl *.ndjson *.xml *.csv *.tsv *.tab "
+    "*.txt *.js *.log);;"
     "All files (*)"
 )
 
 #: Extensions opened as read-only plain text (no structural index/tree).
-TEXT_EXTS = (".txt", ".js")
+TEXT_EXTS = (".txt", ".js", ".log")
 
 #: Extensions the engine parses as non-JSON structured formats; anything else
 #: (.json/.jsonl/.ndjson and unknown) is treated as JSON.
@@ -374,20 +375,34 @@ class _JobProgressDialog(QDialog):
         self._canceled = False
         center = Qt.AlignmentFlag.AlignCenter
 
+        # Muted text color from the app theme (palette(mid) renders dark on the
+        # dark theme and vanishes); title uses the normal text color.
+        muted = "palette(text)"
+        title_color = "palette(text)"
+        style = getattr(parent, "_style", None)
+        if style is not None:
+            try:
+                muted = style.text.name()
+                title_color = style.key.name()
+            except Exception:
+                pass
+
         lay = QVBoxLayout(self)
         lay.setContentsMargins(40, 34, 40, 30)
         lay.setSpacing(16)
 
         self._title = QLabel(title)
         self._title.setAlignment(center)
-        self._title.setStyleSheet("font-size: 22px; font-weight: 700;")
+        self._title.setStyleSheet(
+            f"font-size: 22px; font-weight: 700; color: {title_color};")
         lay.addWidget(self._title)
 
         self._subtitle = QLabel(subtitle)
         self._subtitle.setAlignment(center)
         self._subtitle.setWordWrap(True)
         self._subtitle.setStyleSheet(
-            "font-family: monospace; font-size: 13px; color: palette(mid);")
+            f"font-family: Menlo, 'DejaVu Sans Mono', Consolas, monospace;"
+            f" font-size: 13px; color: {muted};")
         self._subtitle.setVisible(bool(subtitle))
         lay.addWidget(self._subtitle)
 
@@ -401,7 +416,8 @@ class _JobProgressDialog(QDialog):
         self._status = QLabel(status)
         self._status.setAlignment(center)
         self._status.setStyleSheet(
-            "font-family: monospace; font-size: 13px; color: palette(mid);")
+            f"font-family: Menlo, 'DejaVu Sans Mono', Consolas, monospace;"
+            f" font-size: 13px; color: {muted};")
         lay.addWidget(self._status)
 
         self._note = QLabel(note)
@@ -2308,9 +2324,13 @@ class MainWindow(QMainWindow):
         view = self.current_view()
         supported = view is not None and view.supports_diagram()
         active = view is not None and view.diagram_mode()
+        # A per-node diagram (right-click ▸ Show as Flow Diagram) can be active
+        # even when the whole document is too big for the document-wide diagram,
+        # so keep the toggle available/visible whenever a diagram is showing.
+        avail = supported or active
         if hasattr(self, "_diagram_action"):
             self._diagram_action.blockSignals(True)
-            self._diagram_action.setEnabled(supported)
+            self._diagram_action.setEnabled(avail)
             self._diagram_action.setChecked(active)
             self._diagram_action.blockSignals(False)
         if hasattr(self, "_diagram_button"):
@@ -2323,7 +2343,7 @@ class MainWindow(QMainWindow):
                 else "Show the data as a flow diagram"
             )
             self._diagram_button.blockSignals(False)
-            self._diagram_button_action.setVisible(supported)
+            self._diagram_button_action.setVisible(avail)
 
     def _sync_scope_combo(self) -> None:
         """The 'Attributes' search scope is XML-only — show it only for XML
@@ -2875,7 +2895,8 @@ class MainWindow(QMainWindow):
         edit.setReadOnly(True)
         edit.setPlainText(text)
         edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        edit.setStyleSheet("font-family: monospace;")
+        edit.setStyleSheet(
+            "font-family: Menlo, 'DejaVu Sans Mono', Consolas, monospace;")
         layout.addWidget(edit)
         buttons = QDialogButtonBox()
         save = buttons.addButton(

@@ -558,6 +558,8 @@ class DocumentTreeView(QTreeView):
 
         if model.hasChildren(index):
             menu.addSeparator()
+            add(menu, "Show as Flow Diagram",
+                lambda: self._show_diagram(index, model))
             add(menu, "Statistics…", lambda: self._show_statistics(index, model))
 
         menu.addSeparator()
@@ -583,6 +585,19 @@ class DocumentTreeView(QTreeView):
         add(menu, "Collapse", lambda: self.collapse(view_index))
 
         menu.exec(self.viewport().mapToGlobal(pos))
+
+    def _show_diagram(self, index, model) -> None:
+        """Render the clicked node's subtree as a flow diagram (size-gated by
+        the node's own child count at click time)."""
+        src_index, model = self._source_model(index)
+        node = model.node_id(src_index)
+        title = model.name_text(src_index) or ""
+        window = self.window()
+        view = window.current_view() if hasattr(window, "current_view") else None
+        if view is not None and hasattr(view, "set_diagram_for_node"):
+            view.set_diagram_for_node(node, title)
+            if hasattr(window, "_sync_diagram_controls"):
+                window._sync_diagram_controls()
 
     def _show_statistics(self, index, model) -> None:
         stats = model.statistics(index)

@@ -60,9 +60,18 @@ def _value_type(value: Any) -> str:
     return "string"
 
 
+#: Long inline values are truncated so a single big string (e.g. a marketing
+#: description) doesn't stretch a card across the whole canvas.
+MAX_VALUE_CHARS = 80
+
+
 def cell_display(value: Any) -> str:
-    """Human-readable text for a single inline value."""
-    return _cell_text(value)
+    """Human-readable text for a single inline value, truncated with an ellipsis
+    so cards stay a readable width."""
+    text = _cell_text(value)
+    if len(text) > MAX_VALUE_CHARS:
+        text = text[:MAX_VALUE_CHARS - 1].rstrip() + "…"
+    return text
 
 
 def _xml_to_plain(value: Any) -> Any:

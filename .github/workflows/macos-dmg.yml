@@ -136,9 +136,20 @@ jobs:
 
       - name: Create DMG
         run: |
+          set -euo pipefail
           DMG="dist/OPENXMLJSON-${{ steps.ver.outputs.version }}-universal2.dmg"
+          # Stage the app next to an /Applications alias so the DMG shows the
+          # familiar "drag the app into Applications" layout. Installing that
+          # way REPLACES any existing /Applications/OPENXMLJSON.app, which
+          # avoids leaving multiple versioned copies registered with Launch
+          # Services (the "3 occurrences in Open With" problem).
+          STAGE="dist/dmg_stage"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp -R "dist/OPENXMLJSON.app" "$STAGE/OPENXMLJSON.app"
+          ln -s /Applications "$STAGE/Applications"
           hdiutil create -volname "OPENXMLJSON" \
-            -srcfolder "dist/OPENXMLJSON.app" -ov -format UDZO "$DMG"
+            -srcfolder "$STAGE" -ov -format UDZO "$DMG"
           echo "Built $DMG"
 
       - name: Notarize and staple DMG

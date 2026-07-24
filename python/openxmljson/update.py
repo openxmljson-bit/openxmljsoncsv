@@ -42,13 +42,15 @@ def is_newer(latest: str, current: str) -> bool:
 
 def pick_asset(assets: List[dict], plat: Optional[str] = None) -> Optional[str]:
     """Return the download URL of the asset for this platform (.dmg on macOS,
-    .exe on Windows), or None if there's no matching asset. ``assets`` is the
-    list returned in a release's ``assets`` field."""
+    .exe on Windows, .AppImage on Linux), or None if there's no matching asset.
+    ``assets`` is the list returned in a release's ``assets`` field."""
     plat = plat or sys.platform
     if plat == "darwin":
         ext = ".dmg"
     elif plat.startswith("win"):
         ext = ".exe"
+    elif plat.startswith("linux"):
+        ext = ".appimage"
     else:
         return None
     for a in assets:

@@ -1,0 +1,147 @@
+name: Linux AppImage
+
+on:
+  push:
+    tags: ["v*"]            # build/publish only on version tags
+  workflow_dispatch: {}      # and on-demand from the Actions tab
+
+permissions:
+  contents: write            # attach the AppImage to a Release on tags
+
+jobs:
+  build:
+    # Build on the oldest supported Ubuntu for the widest glibc compatibility:
+    # an AppImage built on newer glibc won't run on older distros.
+    runs-on: ubuntu-22.04
+
+    env:
+      HAS_RELEASES_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN != '' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo build
+        uses: Swatinem/rust-cache@v2
+
+      # Runtime libraries the bundled Qt (xcb platform plugin) links against.
+      # PyInstaller ships PySide6's own Qt, but the xcb plugin still needs these
+      # system X libraries present so they get pulled into the bundle / run.
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libxcb-xfixes0 libdbus-1-3 libfontconfig1
+
+      - name: Determine version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.1.0" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Stamp the resolved version into pyproject.toml / Cargo.toml so the built
+      # package's metadata (and thus the in-app version) matches the git tag.
+      - name: Stamp version
+        env:
+          OXJ_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re
+          v = os.environ["OXJ_VERSION"]
+          for f in ("pyproject.toml", "Cargo.toml"):
+              p = pathlib.Path(f)
+              p.write_text(re.sub(r'(?m)^version = "[^"]*"',
+                                  f'version = "{v}"', p.read_text(), count=1))
+          print("Stamped version", v)
+          PY
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+
+      # Builds the native module (maturin PEP 517 backend) and installs the
+      # package + deps (PySide6-Essentials, …) into this env.
+      - name: Build & install native module
+        run: pip install .
+
+      - name: Build app with PyInstaller
+        working-directory: packaging
+        run: pyinstaller openxmljson.spec --distpath ../dist --workpath ../build --noconfirm
+
+      - name: Assemble AppDir and build AppImage
+        run: |
+          set -euo pipefail
+          VER="${{ steps.ver.outputs.version }}"
+          APPDIR=dist/AppDir
+          rm -rf "$APPDIR"
+          mkdir -p "$APPDIR/usr/bin"
+          # PyInstaller onedir output → dist/OPENXMLJSON/ (binary: OPENXMLJSON)
+          cp -r dist/OPENXMLJSON/. "$APPDIR/usr/bin/"
+
+          # Desktop entry (AppImage requires one at the AppDir root).
+          cat > "$APPDIR/openxmljson.desktop" <<EOF
+          [Desktop Entry]
+          Type=Application
+          Name=OPENXMLJSON
+          Comment=Viewer for very large JSON / XML / CSV files
+          Exec=OPENXMLJSON
+          Icon=openxmljson
+          Categories=Utility;Development;
+          Terminal=false
+          EOF
+
+          # Icon at the AppDir root (name must match Icon= above).
+          cp packaging/icons/icon-1024.png "$APPDIR/openxmljson.png"
+
+          # AppRun launches the bundled executable.
+          cat > "$APPDIR/AppRun" <<'EOF'
+          #!/bin/bash
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/usr/bin/OPENXMLJSON" "$@"
+          EOF
+          chmod +x "$APPDIR/AppRun"
+
+          # appimagetool (run with --appimage-extract-and-run: GH runners have
+          # no FUSE, so its own AppImage can't self-mount).
+          wget -q \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
+            -O /tmp/appimagetool
+          chmod +x /tmp/appimagetool
+          OUT="dist/OPENXMLJSON-${VER}-x86_64.AppImage"
+          ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run "$APPDIR" "$OUT"
+          echo "Built $OUT"
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OPENXMLJSON-${{ steps.ver.outputs.version }}-linux-appimage
+          path: dist/OPENXMLJSON-*-x86_64.AppImage
+          if-no-files-found: error
+
+      # On tag pushes: publish the AppImage to the PUBLIC releases repo (source
+      # stays private). Needs RELEASES_REPO_TOKEN — a PAT with contents:write on
+      # that repo. Skipped automatically if the secret isn't set.
+      - name: Publish Release
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAS_RELEASES_TOKEN == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: openxmljson-bit/openxmljsoncsv-releases
+          token: ${{ secrets.RELEASES_REPO_TOKEN }}
+          tag_name: ${{ github.ref_name }}
+          files: dist/OPENXMLJSON-*-x86_64.AppImage

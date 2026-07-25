@@ -784,6 +784,14 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self._type_label)
         self._name_label = QLabel(WATERMARK_TEXT)
         self.statusBar().addPermanentWidget(self._name_label)
+        # License status badge — click to open the Activate dialog.
+        self._license_label = QLabel("")
+        self._license_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._license_label.setToolTip("Click to activate or manage your "
+                                       "subscription")
+        self._license_label.mousePressEvent = (
+            lambda _e: self.activate_license())
+        self.statusBar().addPermanentWidget(self._license_label)
         self._lights = ActivityLights(self._style)
         self.statusBar().addPermanentWidget(self._lights)
         # Async open state.
@@ -1813,11 +1821,14 @@ class MainWindow(QMainWindow):
             lambda: self.check_for_updates(manual=True))
         self._updates_action.setEnabled(UPDATES_ENABLED)
         help_menu.addSeparator()
+        self._action(help_menu, "Activate…", self.activate_license)
         self._action(help_menu, "About OPENXMLJSON", self.show_about)
 
         # Initial enable/disable for the empty (no-document) state.
         self._sync_tools_controls()
         self._sync_scope_combo()
+        # Reflect any cached license state in the status badge at startup.
+        self._refresh_license_badge()
 
     @staticmethod
     def _strip_menu_icons(menu) -> None:
@@ -1864,6 +1875,8 @@ class MainWindow(QMainWindow):
         self._load_label.setStyleSheet(
             f"color: {self._style.text.name()}; padding: 0 8px;"
         )
+        if hasattr(self, "_license_label"):
+            self._refresh_license_badge()   # recolor for the new theme
         self._lights.set_style(self._style)
         self._welcome.set_style(self._style)
         for view in self._views():
@@ -3676,6 +3689,49 @@ class MainWindow(QMainWindow):
             "zero-copy memory-mapped structural index.\n\n"
             "Author: OPENXMLJSON",
         )
+
+    # -- licensing (soft gate) -----------------------------------------------------------------
+
+    def activate_license(self) -> None:
+        """Help ▸ Activate… (and status-badge click): open the license dialog,
+        then refresh the badge. Soft gate — the app keeps working regardless."""
+        try:
+            from openxmljson.licensing.ui import LicenseDialog
+        except Exception as exc:   # missing optional dep, etc.
+            QMessageBox.warning(
+                self, "Activation unavailable",
+                f"The activation dialog couldn't be opened:\n\n{exc}")
+            return
+        LicenseDialog(parent=self).exec()
+        self._refresh_license_badge()
+
+    def _refresh_license_badge(self) -> None:
+        """Show the current (cached) license status in the status bar."""
+        if not hasattr(self, "_license_label"):
+            return
+        tier = ""
+        try:
+            from openxmljson.licensing import cache
+            from openxmljson.licensing.config import ApiConfig
+
+            ent = cache.load(ApiConfig.from_env())
+            if ent and ent.valid:
+                tier = ent.tier or "Licensed"
+        except Exception:
+            tier = ""
+        s = self._style
+        if tier:
+            self._license_label.setText(f"● {tier}")
+            self._license_label.setStyleSheet(
+                f"color: {s.string.name()}; padding: 0 8px;")
+            self._license_label.setToolTip(
+                "Subscription active — click to manage")
+        else:
+            self._license_label.setText("Activate")
+            self._license_label.setStyleSheet(
+                "color: #2F6BE3; padding: 0 8px;")
+            self._license_label.setToolTip(
+                "Click to activate your subscription")
 
     # -- search --------------------------------------------------------------------------------
 

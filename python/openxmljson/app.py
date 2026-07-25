@@ -1553,10 +1553,16 @@ class MainWindow(QMainWindow):
                 row.setData(0, Qt.ItemDataRole.UserRole, path)
                 head.addChild(row)
                 reveal = QToolButton()
-                reveal.setText("📂")
+                # Monochrome open-folder glyph (defaults to text presentation,
+                # so — unlike the 📂 emoji — it honors the blue color below).
+                reveal.setText("\U0001F5C1")
                 reveal.setAutoRaise(True)
                 reveal.setCursor(Qt.CursorShape.PointingHandCursor)
                 reveal.setToolTip("Show in folder")
+                reveal.setStyleSheet(
+                    "QToolButton { border: none; background: transparent;"
+                    " color: #2F6BE3; font-size: 16px; padding: 0; }"
+                    "QToolButton:hover { color: #1A4FC4; }")
                 reveal.clicked.connect(
                     lambda _=False, p=path: self._reveal_in_folder(p))
                 panel.setItemWidget(row, 1, reveal)

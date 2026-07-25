@@ -76,6 +76,12 @@ _EXCLUDE_PYSIDE = [
 ]
 _EXCLUDE_OTHER = ["tkinter", "unittest", "pydoc", "pdb", "test", "lib2to3"]
 
+# PyYAML's optional C accelerator (_yaml) ships as a THIN (single-arch) .so via
+# pip wheels, which aborts a macOS universal2 PyInstaller build. We only use
+# yaml.safe_load_all / safe_dump, which work with PyYAML's pure-Python fallback,
+# so exclude the compiled extension and let YAML run in pure Python.
+_EXCLUDE_OTHER += ["_yaml", "yaml._yaml"]
+
 a = Analysis(
     ["launcher.py"],
     pathex=["."],
@@ -125,8 +131,17 @@ def _keep(dest: str) -> bool:
     return True
 
 
+def _drop_binary(dest: str) -> bool:
+    """Binaries to remove outright. PyYAML's _yaml C accelerator ships as a
+    THIN (single-arch) .so via pip wheels and aborts the macOS universal2
+    build ("not a fat binary"). We only use pure-Python yaml.safe_load_all /
+    safe_dump, so drop it here regardless of how it entered a.binaries."""
+    base = dest.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return base.startswith("_yaml.") or base.startswith("_yaml-")
+
+
 a.datas = [t for t in a.datas if _keep(t[0])]
-a.binaries = [t for t in a.binaries if _keep(t[0])]
+a.binaries = [t for t in a.binaries if _keep(t[0]) and not _drop_binary(t[0])]
 
 # Stripping symbols shrinks the bundle on macOS/Linux, but on Windows the
 # strip utility corrupts the bundled DLLs (e.g. python3xx.dll), causing

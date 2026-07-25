@@ -1,0 +1,23 @@
+# Netlify config for the OPENXMLJSON licensing API.
+#
+# Deploy from this `server/` directory (netlify deploy --dir=. or connect the
+# repo with base = "server"). Functions live in netlify/functions and are
+# reachable at /.netlify/functions/<name>; the redirects below give the clean
+# /request-otp and /verify paths the desktop client expects.
+
+[build]
+  functions = "netlify/functions"
+  publish = "public"
+
+[functions]
+  node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/request-otp"
+  to = "/.netlify/functions/request-otp"
+  status = 200
+
+[[redirects]]
+  from = "/verify"
+  to = "/.netlify/functions/verify"
+  status = 200

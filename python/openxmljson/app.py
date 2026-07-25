@@ -137,7 +137,7 @@ RESTORE_AUTOLOAD_LIMIT = 256 * 1024 * 1024  # 256 MB
 #: (right-click ▸ Export Value As) is unbounded.
 PRETTY_EXPORT_LIMIT = 1024 * 1024 * 1024   # 1 GB
 
-MAX_RECENT = 10
+MAX_RECENT = 15
 
 #: Keep references to extra windows (File ▸ New Window).
 _windows: list = []

@@ -298,7 +298,7 @@ class WelcomeWidget(QWidget):
             w = item.widget()
             if w is not None:
                 w.deleteLater()
-        recent = self._window._recent_list()[:10]
+        recent = self._window._recent_list()[:15]
         self._recent_title.setVisible(bool(recent))
         for path in recent:
             size = _human_size(path)

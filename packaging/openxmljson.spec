@@ -85,6 +85,7 @@ a = Analysis(
         "openxmljson._native",
         *collect_submodules("openxmljson"),
         *collect_submodules("jsbeautifier"),  # .js formatter (lazy-imported)
+        *collect_submodules("pygments"),      # lexers resolve dynamically
     ],
     hookspath=[],
     runtime_hooks=[],

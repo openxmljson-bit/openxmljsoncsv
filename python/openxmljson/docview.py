@@ -12,7 +12,7 @@ import os
 import re
 import tempfile
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import QMessageBox, QStackedLayout, QWidget
 
 from openxmljson.model import DocumentModel, NodeFilterProxy
@@ -108,7 +108,9 @@ class DocumentView(QWidget):
         self.diagram = None  # DiagramView (QGraphicsView), created lazily
         self.text_view = None  # CodeEditor for plain-text (.txt/.js) tabs
         self.is_text = False   # True when this tab is a plain-text file
-        self._text_highlighter = None  # JsHighlighter for .js tabs
+        self._text_highlighter = None  # highlighter for the text view
+        self._pyg_token = None         # identity of the in-flight Pygments lex
+        self._pyg_signals = None       # keeps the worker's signals alive
         self._xml_highlighter = None
         self._xml_highlight = False       # effective state (gated by doc)
         self._xml_highlight_pref = False  # user preference, re-clamped on load
@@ -269,30 +271,82 @@ class DocumentView(QWidget):
         self.text_view.set_style(self._style)
         self.text_view.setPlainText(text)
 
-        # Attach (or detach) syntax highlighting: JavaScript for .js, log
-        # colorization (levels/timestamps) for .log.
+        # Attach (or detach) syntax highlighting. Logs keep the tailored level/
+        # timestamp highlighter. Everything else: the fast built-in highlighter
+        # (JS/Python) attaches immediately, then Pygments (~500 languages,
+        # whole-text lex so multiline constructs are correct) is computed on a
+        # background thread and swapped in when ready — full-text lexing is far
+        # too slow (~1 MB/s) to run on the GUI thread at the 32 MB cap.
         if self._text_highlighter is not None:
             self._text_highlighter.setDocument(None)
             self._text_highlighter = None
+        self._pyg_token = None   # invalidates any in-flight lex for an old file
         low = path.lower()
-        if low.endswith(".js"):
-            from openxmljson.codeview import JsHighlighter
-
-            self._text_highlighter = JsHighlighter(
-                self.text_view.document(), self._style)
-        elif low.endswith(".log"):
+        if low.endswith(".log"):
             from openxmljson.codeview import LogHighlighter
 
             self._text_highlighter = LogHighlighter(
                 self.text_view.document(), self._style)
-        elif low.endswith(".py"):
-            from openxmljson.codeview import PythonHighlighter
+        else:
+            if low.endswith(".js"):
+                from openxmljson.codeview import JsHighlighter
 
-            self._text_highlighter = PythonHighlighter(
-                self.text_view.document(), self._style)
+                self._text_highlighter = JsHighlighter(
+                    self.text_view.document(), self._style)
+            elif low.endswith(".py"):
+                from openxmljson.codeview import PythonHighlighter
+
+                self._text_highlighter = PythonHighlighter(
+                    self.text_view.document(), self._style)
+            self._start_pygments(path, text)
 
         self._stack.setCurrentWidget(self.text_view)
         self.info = f"TEXT · {size / 1e6:.1f} MB"
+
+    def _start_pygments(self, path: str, text: str) -> None:
+        """Lex ``text`` with Pygments on a background thread and swap the
+        resulting highlighter in when ready. No-op when Pygments is missing,
+        the type is unknown (.txt), or the text exceeds the size cap."""
+        from openxmljson import pyghighlight
+
+        if (not pyghighlight.available()
+                or len(text) > pyghighlight.PYGMENTS_MAX_BYTES):
+            return
+        lexer = pyghighlight.lexer_for(path)
+        if lexer is None:
+            return
+
+        token = object()          # identifies THIS load; reload invalidates it
+        self._pyg_token = token
+
+        class _Signals(QObject):
+            done = Signal(object)
+
+        signals = _Signals()
+
+        class _LexTask(QRunnable):
+            def run(self) -> None:  # noqa: N802
+                try:
+                    ranges = pyghighlight.line_ranges(text, lexer)
+                except Exception:  # noqa: BLE001 - lexing is best-effort
+                    ranges = None
+                signals.done.emit(ranges)
+
+        def on_done(ranges) -> None:
+            self._pyg_signals = None
+            if ranges is None or self._pyg_token is not token:
+                return            # failed, or the tab was reloaded meanwhile
+            if not self.is_text or self.text_view is None:
+                return
+            if self._text_highlighter is not None:
+                self._text_highlighter.setDocument(None)
+            self._text_highlighter = pyghighlight.PygmentsHighlighter(
+                self.text_view.document(), self._style, ranges)
+
+        signals.done.connect(on_done)
+        self._pyg_signals = signals   # keep alive until delivered
+        task = _LexTask()
+        QThreadPool.globalInstance().start(task)
 
     def _active_text_editor(self):
         """The QPlainTextEdit that Find should search, if any: the plain-text

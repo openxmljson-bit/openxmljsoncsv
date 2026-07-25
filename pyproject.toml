@@ -18,6 +18,9 @@ dependencies = [
     # Pure-Python JavaScript beautifier (js-beautify port) for the .js
     # plain-text formatter. No native deps.
     "jsbeautifier",
+    # Syntax highlighting for the plain-text tabs (~500 languages). BSD-2,
+    # pure Python. Falls back to the built-in highlighters if missing.
+    "pygments",
     # macOS: lets the app rename its menu-bar entry from "Python" to
     # OPENXMLJSON when running unbundled (see app._set_macos_process_name).
     "pyobjc-framework-Cocoa; sys_platform == 'darwin'",

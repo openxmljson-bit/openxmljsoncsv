@@ -57,12 +57,19 @@ from openxmljson.tree import EXPAND_ALL_CONFIRM_NODES, EXPAND_ALL_MAX_NODES
 
 FILE_FILTER = (
     "Documents (*.json *.jsonl *.ndjson *.xml *.csv *.tsv *.tab "
-    "*.txt *.js *.log *.py);;"
+    "*.yaml *.yml *.txt *.js *.log *.py);;"
     "All files (*)"
 )
 
 #: Extensions opened as read-only plain text (no structural index/tree).
 TEXT_EXTS = (".txt", ".js", ".log", ".py")
+
+#: YAML: parsed with PyYAML and viewed through the JSON engine (YAML is a
+#: config-sized format — the large-file machinery isn't needed for it).
+YAML_EXTS = (".yaml", ".yml")
+
+#: YAML parsing is whole-file and pure Python, so cap it (real YAML is KB–MB).
+YAML_MAX_BYTES = 32 * 1024 * 1024
 
 #: Extensions the engine parses as non-JSON structured formats; anything else
 #: (.json/.jsonl/.ndjson and unknown) is treated as JSON.
@@ -781,6 +788,7 @@ class MainWindow(QMainWindow):
         # Async open state.
         self._pending_opens = set()      # paths currently being parsed
         self._pending_url = {}           # path -> source URL (async open assoc)
+        self._yaml_origin = {}           # temp json path -> original .yaml path
         self._temp_files = set()         # app-created temp files, deleted on close
         self._open_signals = []          # keep signal objects alive
         self._restore_current_path = None  # tab to select once restored
@@ -1444,6 +1452,8 @@ class MainWindow(QMainWindow):
         self._action(export_menu, "Pretty JSON…", self.export_pretty_json)
         self._action(export_menu, "XML…", lambda: self.export_converted("xml"))
         self._action(export_menu, "CSV…", lambda: self.export_converted("csv"))
+        self._action(export_menu, "YAML…",
+                     lambda: self.export_converted("yaml"))
         export_menu.addSeparator()
         self._action(export_menu, "Selection as JSON…",
                      lambda: self._export_selection(True))
@@ -1780,6 +1790,9 @@ class MainWindow(QMainWindow):
             else:
                 self._open_text_view(path)
                 return
+        if ext in YAML_EXTS:
+            self._open_yaml(path)
+            return
         # JSON size gate (free edition): cap JSON — not XML/CSV/TSV — at
         # JSON_MAX_BYTES. Disabled in the premium edition (edition.py).
         if ENFORCE_SIZE_GATE and JSON_MAX_BYTES and ext not in _NON_JSON_EXTS:
@@ -1842,8 +1855,10 @@ class MainWindow(QMainWindow):
             view.source_url, view.curl_command = meta
         view.load(doc, path)
         view.load_ms = load_ms
-        index = self.tabs.addTab(view, os.path.basename(path))
-        self.tabs.setTabToolTip(index, path)
+        # A tab opened from a converted YAML file shows the original name.
+        origin = self._yaml_origin.get(path)
+        index = self.tabs.addTab(view, os.path.basename(origin or path))
+        self.tabs.setTabToolTip(index, origin or path)
         from PySide6.QtWidgets import QTabBar
 
         self.tabs.tabBar().setTabButton(
@@ -1852,9 +1867,12 @@ class MainWindow(QMainWindow):
         )
         self.tabs.setCurrentIndex(index)
         self._update_tab_marks()
-        # Count .log files as LOG even when opened structurally (NDJSON logs).
+        # Count .log files as LOG even when opened structurally (NDJSON logs),
+        # and converted YAML as YAML.
         self._bump_file_type(
-            "LOG" if path.lower().endswith(".log") else doc.format_name())
+            "YAML" if origin
+            else "LOG" if path.lower().endswith(".log")
+            else doc.format_name())
         self._update_central()
         self._remember_recent(path)
         self._watch(path)
@@ -1866,6 +1884,47 @@ class MainWindow(QMainWindow):
         if self._restore_current_path == path:
             self.tabs.setCurrentIndex(index)
             self._restore_current_path = None
+
+    def _open_yaml(self, path: str) -> None:
+        """Open a .yaml/.yml file: parse with PyYAML, convert to JSON in a
+        temp file, and open that through the normal engine — so the tree,
+        search, filter, jq, schema and Deep Dive all work on YAML documents.
+        The tab keeps the original YAML name; parse errors fall back to the
+        plain-text view with a message."""
+        from openxmljson import convert
+
+        try:
+            size = os.path.getsize(path)
+        except OSError as exc:
+            QMessageBox.critical(self, "Cannot open file", str(exc))
+            return
+        if size > YAML_MAX_BYTES:
+            QMessageBox.warning(
+                self, "YAML too large",
+                f"YAML parsing is capped at {YAML_MAX_BYTES // (1024*1024)} MB "
+                f"(this file is {_fmt_size(size)}). Opening as plain text.")
+            self._open_text_view(path)
+            return
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+            with self._busy():
+                json_text = convert.yaml_to_json_text(text)
+        except ValueError as exc:
+            self.statusBar().showMessage(
+                f"Not valid YAML — opened as plain text. ({exc})", 8000)
+            self._open_text_view(path)
+            return
+        except OSError as exc:
+            QMessageBox.critical(self, "Cannot open file", str(exc))
+            return
+        tmp = self._write_temp_or_warn(
+            json_text.encode("utf-8"), ".json", "YAML document")
+        if tmp is None:
+            return
+        self._yaml_origin[tmp] = path
+        self._remember_recent(path)   # recents reopen the original .yaml
+        self.open_path(tmp)
 
     def _open_text_view(self, path: str) -> None:
         """Open a .txt/.js file as a read-only plain-text tab (no engine)."""
@@ -2446,7 +2505,7 @@ class MainWindow(QMainWindow):
         return values[0] if len(values) == 1 else values
 
     def export_converted(self, target: str) -> None:
-        """File ▸ Export Data As ▸ XML/CSV — cross-format conversion."""
+        """Export ▸ XML/CSV/YAML — cross-format conversion."""
         from openxmljson import convert
 
         view = self.current_view()
@@ -2457,11 +2516,12 @@ class MainWindow(QMainWindow):
         if value is None:
             return
         try:
-            content = (
-                convert.to_xml(value)
-                if target == "xml"
-                else convert.to_csv(value)
-            )
+            if target == "xml":
+                content = convert.to_xml(value)
+            elif target == "yaml":
+                content = convert.to_yaml(value)
+            else:
+                content = convert.to_csv(value)
         except (ValueError, RecursionError, MemoryError) as exc:
             QMessageBox.warning(self, "Cannot convert", str(exc))
             return

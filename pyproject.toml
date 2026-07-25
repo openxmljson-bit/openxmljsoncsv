@@ -21,6 +21,9 @@ dependencies = [
     # Syntax highlighting for the plain-text tabs (~500 languages). BSD-2,
     # pure Python. Falls back to the built-in highlighters if missing.
     "pygments",
+    # YAML open/export (library-based — YAML is config-sized, so the native
+    # large-file engine isn't needed for it). MIT.
+    "pyyaml",
     # macOS: lets the app rename its menu-bar entry from "Python" to
     # OPENXMLJSON when running unbundled (see app._set_macos_process_name).
     "pyobjc-framework-Cocoa; sys_platform == 'darwin'",

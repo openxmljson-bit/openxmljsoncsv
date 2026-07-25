@@ -10,6 +10,7 @@ under its own license; the notices below satisfy their attribution terms.
 | PySide6-Essentials / Qt 6 | **LGPLv3** | Qt libraries are bundled as separate dynamic libraries (dynamically linked, replaceable by the user), per LGPLv3 §4(d). Source: <https://code.qt.io>. |
 | Pygments | **BSD 2-Clause** | Syntax highlighting. © Pygments contributors. |
 | jsbeautifier | **MIT** | JavaScript formatter (js-beautify port). |
+| PyYAML | **MIT** | YAML parsing/serialization. |
 | certifi | **MPL-2.0** | Mozilla CA bundle. File-level copyleft only; distributed unmodified. |
 | pyobjc-framework-Cocoa (macOS only) | **MIT** | macOS menu-bar integration. |
 

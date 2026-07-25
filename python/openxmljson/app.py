@@ -771,6 +771,7 @@ class MainWindow(QMainWindow):
 
         self._build_find_bar()
         self._build_jq_bar()
+        self._build_recent_dock()
         self._build_menus(appearance)
 
         # Permanent widgets (right group, added left-to-right). The load
@@ -992,6 +993,10 @@ class MainWindow(QMainWindow):
         if self.tabs.count() == 0:
             self._welcome.refresh()
             self._central.setCurrentWidget(self._welcome)
+            # The recent panel is a with-documents companion; the welcome
+            # screen has its own recent list.
+            if hasattr(self, "_recent_dock"):
+                self._recent_dock.hide()
         else:
             self._central.setCurrentWidget(self.tabs)
 
@@ -1366,6 +1371,15 @@ class MainWindow(QMainWindow):
         self._diagram_button_action = bar.addWidget(self._diagram_button)
         self._diagram_button_action.setVisible(False)
 
+        # Recent-files side panel toggle — the find bar only exists while a
+        # document is open, so the panel is reachable exactly then.
+        self._recent_button = QToolButton()
+        self._recent_button.setText("Recent")
+        self._recent_button.setCheckable(True)
+        self._recent_button.setToolTip("Show recently opened files")
+        self._recent_button.toggled.connect(self._toggle_recent_dock)
+        bar.addWidget(self._recent_button)
+
         # Start hidden — the welcome screen (no document) shows no Find bar;
         # _on_tab_changed reveals it when a document is open.
         bar.setVisible(False)
@@ -1383,7 +1397,10 @@ class MainWindow(QMainWindow):
         self.jq_edit = QLineEdit()
         self.jq_edit.setPlaceholderText("jq filter — e.g. .fruits | map(.name)")
         self.jq_edit.setClearButtonEnabled(True)
-        self.jq_edit.setMinimumWidth(360)
+        self.jq_edit.setMinimumWidth(300)
+        # Don't stretch across the whole window — roughly match the Find/Filter
+        # group's width above so the two bars read as one aligned block.
+        self.jq_edit.setMaximumWidth(560)
         self.jq_edit.setToolTip(
             "Run a jq filter over the document; the result opens in a new tab.\n"
             "Press Enter to run. e.g.  .items | sort_by(.price)"
@@ -1397,6 +1414,155 @@ class MainWindow(QMainWindow):
         jq_button.clicked.connect(self._run_jq_now)
         bar.addWidget(jq_button)
         bar.setVisible(False)   # revealed by _sync_jq_controls per document
+
+    # -- recent files side panel -----------------------------------------------
+
+    #: Recent-panel groups: extension → section header, in display order.
+    _RECENT_GROUPS = [
+        ("JSON", (".json", ".jsonl", ".ndjson")),
+        ("XML", (".xml",)),
+        ("CSV", (".csv", ".tsv", ".tab")),
+        ("YAML", (".yaml", ".yml")),
+        ("Logs", (".log",)),
+        ("Code", (".js", ".py", ".ts")),
+        ("Text", (".txt",)),
+    ]
+
+    def _build_recent_dock(self) -> None:
+        """A right-side dock listing recent files grouped by type (toggled by
+        the find bar's Recent button; only reachable while a document is
+        open). Each file row has a reveal-in-folder button."""
+        from PySide6.QtWidgets import QDockWidget, QTreeWidget
+
+        self._recent_dock = QDockWidget("Recent Files", self)
+        self._recent_dock.setObjectName("recentDock")
+        self._recent_dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
+        # No title-bar buttons at all — the panel is opened and closed solely
+        # by the find bar's Recent toggle.
+        self._recent_dock.setFeatures(
+            QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
+        panel = QTreeWidget()
+        panel.setObjectName("recentPanel")
+        panel.setColumnCount(2)
+        panel.setHeaderHidden(True)
+        panel.setRootIsDecorated(True)
+        panel.setIndentation(12)
+        panel.setMinimumWidth(260)
+        panel.header().setStretchLastSection(False)
+        from PySide6.QtWidgets import QHeaderView
+
+        panel.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        panel.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        panel.setColumnWidth(1, 30)
+        # Rows act like links (click = open) — no persistent selection state.
+        from PySide6.QtWidgets import QAbstractItemView
+
+        panel.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        panel.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        panel.itemClicked.connect(self._open_recent_item)
+        self._recent_panel = panel
+        self._recent_dock.setWidget(panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,
+                           self._recent_dock)
+        self._recent_dock.hide()
+        # Keep the toggle button in step when the dock is closed via its ✕.
+        self._recent_dock.visibilityChanged.connect(self._sync_recent_button)
+
+    def _toggle_recent_dock(self, checked: bool) -> None:
+        if checked:
+            self._populate_recent_panel()
+        self._recent_dock.setVisible(checked)
+
+    def _sync_recent_button(self, visible: bool) -> None:
+        if hasattr(self, "_recent_button"):
+            self._recent_button.blockSignals(True)
+            self._recent_button.setChecked(visible)
+            self._recent_button.blockSignals(False)
+
+    def _clear_recent(self) -> None:
+        """Clear the recent list everywhere: menu, welcome card, side panel."""
+        self._settings.setValue("recent", [])
+        if hasattr(self, "_recent_dock") and self._recent_dock.isVisible():
+            self._populate_recent_panel()
+
+    def _recent_group_of(self, path: str) -> str:
+        ext = os.path.splitext(path)[1].lower()
+        for label, exts in self._RECENT_GROUPS:
+            if ext in exts:
+                return label
+        return "Other"
+
+    def _populate_recent_panel(self) -> None:
+        from PySide6.QtGui import QFont
+        from PySide6.QtWidgets import QToolButton, QTreeWidgetItem
+
+        from openxmljson.welcome import _human_size, _middle_ellipsis
+
+        panel = self._recent_panel
+        panel.clear()
+        # Bucket recents by group, preserving recency order inside each.
+        buckets: dict = {}
+        for path in self._recent_list():
+            buckets.setdefault(self._recent_group_of(path), []).append(path)
+        if not buckets:   # empty state (cleared, or only unsaved/temp tabs)
+            placeholder = QTreeWidgetItem(["No recent files", ""])
+            placeholder.setFlags(Qt.ItemFlag.NoItemFlags)   # greyed, inert
+            panel.addTopLevelItem(placeholder)
+            return
+        order = [label for label, _ in self._RECENT_GROUPS] + ["Other"]
+        for label in order:
+            paths = buckets.get(label)
+            if not paths:
+                continue
+            head = QTreeWidgetItem([f"{label}  ({len(paths)})", ""])
+            font = QFont(panel.font())
+            font.setBold(True)
+            head.setFont(0, font)
+            head.setFlags(Qt.ItemFlag.ItemIsEnabled)   # not selectable
+            panel.addTopLevelItem(head)
+            for path in paths:
+                size = _human_size(path)
+                name = _middle_ellipsis(os.path.basename(path), 28)
+                text = name + (f"   ~{size}" if size else "")
+                row = QTreeWidgetItem([text, ""])
+                row.setToolTip(0, path)
+                row.setData(0, Qt.ItemDataRole.UserRole, path)
+                head.addChild(row)
+                reveal = QToolButton()
+                reveal.setText("📂")
+                reveal.setAutoRaise(True)
+                reveal.setCursor(Qt.CursorShape.PointingHandCursor)
+                reveal.setToolTip("Show in folder")
+                reveal.clicked.connect(
+                    lambda _=False, p=path: self._reveal_in_folder(p))
+                panel.setItemWidget(row, 1, reveal)
+            head.setExpanded(True)
+
+    def _open_recent_item(self, item, column: int = 0) -> None:
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        if path:
+            self.open_path(path)
+            self._populate_recent_panel()   # newly opened file moves to top
+        elif item.childCount():
+            item.setExpanded(not item.isExpanded())   # header click toggles
+
+    def _reveal_in_folder(self, path: str) -> None:
+        """Show the file in Finder / Explorer / the file manager."""
+        import subprocess
+
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", path])
+            elif sys.platform.startswith("win"):
+                subprocess.Popen(["explorer", "/select,", path])
+            else:
+                from PySide6.QtCore import QUrl
+                from PySide6.QtGui import QDesktopServices
+
+                QDesktopServices.openUrl(
+                    QUrl.fromLocalFile(os.path.dirname(path)))
+        except OSError:
+            self.statusBar().showMessage("Couldn't open the folder.", 4000)
 
     # -- menus --------------------------------------------------------------------
 
@@ -1637,6 +1803,27 @@ class MainWindow(QMainWindow):
 
     def _apply_style(self) -> None:
         self.setStyleSheet(stylesheet(self._style))
+        if hasattr(self, "_recent_dock"):
+            s = self._style
+            self._recent_dock.setStyleSheet(
+                f"QDockWidget {{ color: {s.key.name()};"
+                f" font-weight: bold; }}"
+                f" QDockWidget::title {{"
+                f" background: {s.window_bg.name()};"
+                f" padding: 6px 10px; }}")
+        if hasattr(self, "_recent_panel"):
+            s = self._style
+            self._recent_panel.setStyleSheet(
+                f"QTreeWidget#recentPanel {{"
+                f" background: {s.view_bg.name()};"
+                f" color: {s.text.name()};"
+                f" border: none; padding: 6px; outline: none; }}"
+                f" QTreeWidget#recentPanel::item {{"
+                f" padding: 5px 4px; border-radius: 6px; }}"
+                f" QTreeWidget#recentPanel::item:hover {{"
+                f" background: {s.view_alt_bg.name()}; }}"
+                f" QTreeWidget#recentPanel::item:selected {{"
+                f" background: transparent; color: {s.text.name()}; }}")
         self._name_label.setStyleSheet(
             f"color: {self._style.text.name()};"
             " font-weight: bold; padding: 0 8px;"
@@ -1893,6 +2080,15 @@ class MainWindow(QMainWindow):
         plain-text view with a message."""
         from openxmljson import convert
 
+        # Already open? The tab's path is the converted temp JSON, so match on
+        # the recorded YAML origin and just switch to that tab.
+        for i in range(self.tabs.count()):
+            widget = self.tabs.widget(i)
+            if (isinstance(widget, DocumentView)
+                    and self._yaml_origin.get(getattr(widget, "path", None))
+                    == path):
+                self.tabs.setCurrentIndex(i)
+                return
         try:
             size = os.path.getsize(path)
         except OSError as exc:
@@ -2284,7 +2480,7 @@ class MainWindow(QMainWindow):
             self._recent_menu.addAction(action)
         self._recent_menu.addSeparator()
         clear = QAction("Clear Menu", self)
-        clear.triggered.connect(lambda: self._settings.setValue("recent", []))
+        clear.triggered.connect(self._clear_recent)
         self._recent_menu.addAction(clear)
 
     # -- exports -----------------------------------------------------------------------------

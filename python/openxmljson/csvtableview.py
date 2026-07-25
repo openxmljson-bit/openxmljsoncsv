@@ -663,6 +663,11 @@ class CsvTableView(QWidget):
         hh.setSectionsMovable(True)
         hh.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         hh.customContextMenuRequested.connect(self._header_menu)
+        from openxmljson.fab import BackToTopButton
+
+        self._fab = BackToTopButton(
+            self.view, getattr(doc_view, "_style", None))
+
         # Colorize the coverage "share" bar column so the blocks read as a
         # colored mini-chart rather than plain white text.
         for c, h in enumerate(self.model.headers()):
@@ -704,6 +709,8 @@ class CsvTableView(QWidget):
     def apply_style(self, style) -> None:
         """Colorize headers, gridlines, selection and the toolbar buttons from
         the app palette (with fixed accent colors per button)."""
+        if getattr(self, "_fab", None) is not None:
+            self._fab.set_style(style)
         def hex_of(attr, fallback):
             color = getattr(style, attr, None) if style is not None else None
             return color.name() if color is not None else fallback

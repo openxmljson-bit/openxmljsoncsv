@@ -111,6 +111,8 @@ class DocumentView(QWidget):
         self._text_highlighter = None  # highlighter for the text view
         self._pyg_token = None         # identity of the in-flight Pygments lex
         self._pyg_signals = None       # keeps the worker's signals alive
+        self._text_fab = None          # back-to-top buttons (created with view)
+        self._xml_fab = None
         self._xml_highlighter = None
         self._xml_highlight = False       # effective state (gated by doc)
         self._xml_highlight_pref = False  # user preference, re-clamped on load
@@ -267,6 +269,9 @@ class DocumentView(QWidget):
             self.text_view.setReadOnly(True)
             self.text_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
             self.text_view.setFont(self.tree.font())
+            from openxmljson.fab import BackToTopButton
+
+            self._text_fab = BackToTopButton(self.text_view, self._style)
             self._stack.addWidget(self.text_view)
         self.text_view.set_style(self._style)
         self.text_view.setPlainText(text)
@@ -500,6 +505,9 @@ class DocumentView(QWidget):
             self._table_container.apply_style(style)
         if self.text_view is not None:
             self._style_text_view()
+        for fab in (self._text_fab, self._xml_fab):
+            if fab is not None:
+                fab.set_style(style)
 
     def set_font(self, font) -> None:
         self.tree.setFont(font)
@@ -819,6 +827,9 @@ class DocumentView(QWidget):
                 self.xml_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
                 self.xml_view.setFont(self.tree.font())
                 self._style_xml_view()
+                from openxmljson.fab import BackToTopButton
+
+                self._xml_fab = BackToTopButton(self.xml_view, self._style)
                 self._stack.addWidget(self.xml_view)
             self.xml_view.setPlainText(self._xml_source_text())
             self._apply_xml_highlight()        # colorize only if opted in

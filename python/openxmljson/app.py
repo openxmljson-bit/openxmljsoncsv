@@ -790,6 +790,7 @@ class MainWindow(QMainWindow):
         self._pending_opens = set()      # paths currently being parsed
         self._pending_url = {}           # path -> source URL (async open assoc)
         self._yaml_origin = {}           # temp json path -> original .yaml path
+        self._pending_dupe_titles = {}   # path -> queued titles for duplicates
         self._temp_files = set()         # app-created temp files, deleted on close
         self._open_signals = []          # keep signal objects alive
         self._restore_current_path = None  # tab to select once restored
@@ -879,7 +880,8 @@ class MainWindow(QMainWindow):
         for i in range(self.tabs.count()):
             widget = self.tabs.widget(i)
             if isinstance(widget, DocumentView) and widget.path == path:
-                base = os.path.basename(path)
+                base = getattr(widget, "tab_title", None) or os.path.basename(
+                    path)
                 self.tabs.setTabText(i, f"{base} ●")
                 self.tabs.setTabToolTip(
                     i, f"{path}\nChanged on disk — File ▸ Reload (F5)"
@@ -902,7 +904,9 @@ class MainWindow(QMainWindow):
     def _clear_dirty_mark(self, view) -> None:
         index = self.tabs.indexOf(view)
         if index >= 0 and view.path:
-            self.tabs.setTabText(index, os.path.basename(view.path))
+            self.tabs.setTabText(
+                index, getattr(view, "tab_title", None)
+                or os.path.basename(view.path))
             self.tabs.setTabToolTip(index, view.path)
 
     # -- session restore ------------------------------------------------------------
@@ -1093,7 +1097,27 @@ class MainWindow(QMainWindow):
             self._pending_url[widget.path] = (
                 src_url, getattr(widget, "curl_command", "") or ""
             )
+        # Give the copy a distinct name: parent name + a 2-digit counter.
+        parent = getattr(widget, "tab_title", None) or self.tabs.tabText(index)
+        title = self._next_dupe_title(parent)
+        self._pending_dupe_titles.setdefault(widget.path, []).append(title)
         self.open_path(widget.path, allow_duplicate=True)
+
+    def _next_dupe_title(self, parent: str) -> str:
+        """`<parent> 01`, `<parent> 02`, … — skips names already in use and
+        never stacks suffixes when duplicating an already-duplicated tab."""
+        import re
+
+        parent = parent.replace(" ●", "").strip()
+        base = re.sub(r" \d{2,}$", "", parent)   # strip any existing " NN"
+        used = {self.tabs.tabText(i).replace(" ●", "").strip()
+                for i in range(self.tabs.count())}
+        used |= set().union(*self._pending_dupe_titles.values()) \
+            if self._pending_dupe_titles else set()
+        n = 1
+        while f"{base} {n:02d}" in used:
+            n += 1
+        return f"{base} {n:02d}"
 
     def _close_button_css(self) -> str:
         s = self._style
@@ -2044,7 +2068,14 @@ class MainWindow(QMainWindow):
         view.load_ms = load_ms
         # A tab opened from a converted YAML file shows the original name.
         origin = self._yaml_origin.get(path)
-        index = self.tabs.addTab(view, os.path.basename(origin or path))
+        title = os.path.basename(origin or path)
+        queue = self._pending_dupe_titles.get(path)
+        if queue:
+            title = queue.pop(0)
+            if not queue:
+                self._pending_dupe_titles.pop(path, None)
+        view.tab_title = title            # survives dirty-mark repaints
+        index = self.tabs.addTab(view, title)
         self.tabs.setTabToolTip(index, origin or path)
         from PySide6.QtWidgets import QTabBar
 
@@ -3162,13 +3193,120 @@ class MainWindow(QMainWindow):
         except (RecursionError, MemoryError) as exc:
             QMessageBox.warning(self, "Cannot compare", str(exc))
             return
-        header = (
-            f"Compare: {os.path.basename(view.path or 'current')}  ↔  "
-            f"{os.path.basename(other.path or 'other')}\n\n"
+        from datetime import datetime
+
+        meta = {
+            "left": os.path.basename(view.path or "current"),
+            "right": os.path.basename(other.path or "other"),
+            "left_path": view.path or "",
+            "right_path": other.path or "",
+            "when": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        self._show_diff_report(meta, changes)
+
+    def _show_diff_report(self, meta: dict, changes) -> None:
+        """Render the structural diff as a styled HTML table with a Save menu
+        offering HTML / TXT / JSON / CSV, plus Open in Browser."""
+        from PySide6.QtWidgets import (
+            QDialog as _QDialog,
+            QMenu,
+            QTextBrowser,
+            QToolButton as _QToolButton,
+            QVBoxLayout as _QVBoxLayout,
         )
-        self._show_report_dialog(
-            "Compare documents", header + difftool.format_report(changes)
-        )
+
+        from openxmljson import difftool
+
+        html = difftool.to_html_report(changes, meta)
+
+        dialog = _QDialog(self)
+        dialog.setWindowTitle("Compare Documents")
+        dialog.resize(1240, 700)
+        layout = _QVBoxLayout(dialog)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(False)
+        browser.setLineWrapMode(QTextBrowser.LineWrapMode.WidgetWidth)
+        browser.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        browser.setHtml(html)
+        browser.setStyleSheet(
+            "QTextBrowser { border: none; background: #ffffff; }")
+        layout.addWidget(browser)
+
+        buttons = QDialogButtonBox()
+        openb = buttons.addButton(
+            "Open in Browser", QDialogButtonBox.ButtonRole.ActionRole)
+        openb.clicked.connect(lambda: self._open_diff_in_browser(html))
+        save = _QToolButton()
+        save.setText("Save As ▾")
+        save.setPopupMode(_QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(save)
+        menu.addAction("HTML…",
+                       lambda: self._save_diff(dialog, "html", meta, changes))
+        menu.addAction("Text (.txt)…",
+                       lambda: self._save_diff(dialog, "txt", meta, changes))
+        menu.addAction("JSON…",
+                       lambda: self._save_diff(dialog, "json", meta, changes))
+        menu.addAction("CSV…",
+                       lambda: self._save_diff(dialog, "csv", meta, changes))
+        save.setMenu(menu)
+        buttons.addButton(save, QDialogButtonBox.ButtonRole.ActionRole)
+        buttons.addButton(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def _open_diff_in_browser(self, html: str) -> None:
+        """Write the report to a temp .html and open it in the default
+        browser (renders the full CSS, unlike the in-app preview)."""
+        import tempfile
+
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        try:
+            fd, path = tempfile.mkstemp(prefix="oxj_compare_", suffix=".html")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(html)
+        except OSError as exc:
+            QMessageBox.critical(self, "Couldn't open report", str(exc))
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _save_diff(self, dialog, fmt, meta, changes) -> None:
+        """Write the diff report in the chosen format."""
+        from openxmljson import difftool
+
+        specs = {
+            "html": ("HTML files (*.html)", "html"),
+            "txt": ("Text files (*.txt)", "txt"),
+            "json": ("JSON files (*.json)", "json"),
+            "csv": ("CSV files (*.csv)", "csv"),
+        }
+        filt, ext = specs[fmt]
+        path, _ = QFileDialog.getSaveFileName(
+            dialog, "Save comparison report",
+            timestamped_name("comparison", ext), f"{filt};;All files (*)")
+        if not path:
+            return
+        try:
+            if fmt == "html":
+                text = difftool.to_html_report(changes, meta)
+            elif fmt == "txt":
+                text = difftool.to_txt_report(changes, meta)
+            elif fmt == "json":
+                text = difftool.to_json_report(changes, meta)
+            else:
+                text = difftool.to_csv_report(changes)
+            with open(path, "w", encoding="utf-8", newline="") as fh:
+                fh.write(text)
+        except OSError as exc:
+            QMessageBox.critical(dialog, "Save failed", str(exc))
+            return
+        self.statusBar().showMessage(f"Saved {os.path.basename(path)}", 4000)
+
 
     def _show_report_dialog(self, title: str, text: str) -> None:
         """A read-only, monospace, scrollable report with a Save button —

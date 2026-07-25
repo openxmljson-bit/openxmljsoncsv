@@ -31,6 +31,40 @@ def to_minified_json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
 
 
+# -- YAML -----------------------------------------------------------------------
+#
+# YAML support is library-based (PyYAML), not a native parser: YAML is a
+# config-sized format in practice, so the zero-copy large-file machinery buys
+# nothing — a .yaml file is converted to JSON and viewed through the normal
+# engine, and any reconstructed value can be serialized back out as YAML.
+
+
+def yaml_to_json_text(text: str) -> str:
+    """Parse YAML text (multi-document supported) and return compact JSON.
+    Multiple documents become a JSON array. Raises ValueError on bad YAML."""
+    import yaml
+
+    try:
+        docs = [d for d in yaml.safe_load_all(text)]
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Invalid YAML: {exc}") from exc
+    if not docs:
+        value: Any = None
+    elif len(docs) == 1:
+        value = docs[0]
+    else:
+        value = docs
+    return json.dumps(value, ensure_ascii=False)
+
+
+def to_yaml(value: Any) -> str:
+    """Serialize a reconstructed value as YAML (block style, key order kept)."""
+    import yaml
+
+    return yaml.safe_dump(
+        value, sort_keys=False, allow_unicode=True, default_flow_style=False)
+
+
 # -- XML ------------------------------------------------------------------------
 
 _TAG_OK = re.compile(r"[A-Za-z_][\w\-.]*$")

@@ -86,6 +86,7 @@ a = Analysis(
         *collect_submodules("openxmljson"),
         *collect_submodules("jsbeautifier"),  # .js formatter (lazy-imported)
         *collect_submodules("pygments"),      # lexers resolve dynamically
+        "yaml",                               # YAML open/export (lazy-imported)
     ],
     hookspath=[],
     runtime_hooks=[],

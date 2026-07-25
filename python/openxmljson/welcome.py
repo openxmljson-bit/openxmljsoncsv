@@ -151,7 +151,7 @@ class WelcomeWidget(QWidget):
         chips.setSpacing(6)
         chips.setContentsMargins(0, 10, 0, 10)
         self._chips = []
-        for fmt in ("JSON", "NDJSON", "XML", "CSV", "TSV"):
+        for fmt in ("JSON", "NDJSON", "XML", "CSV", "TSV", "YAML"):
             chip = QLabel(fmt)
             chip.setObjectName("welcomeChip")
             chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -337,7 +337,8 @@ class WelcomeWidget(QWidget):
             return
         peak = max(counts.values())
         # Stable, familiar order; unknown formats appended.
-        order = ["JSON", "NDJSON", "XML", "CSV", "TSV", "TXT", "JS", "LOG", "PY"]
+        order = ["JSON", "NDJSON", "XML", "CSV", "TSV", "YAML",
+                 "TXT", "JS", "LOG", "PY"]
         keys = [k for k in order if k in counts] + [
             k for k in counts if k not in order
         ]

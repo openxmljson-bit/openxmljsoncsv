@@ -33,6 +33,32 @@ function q(value) {
   return String(value).replace(/["\\]/g, "\\$&");
 }
 
+// Save a minted license key onto an order as a metafield
+// (openxmljson.license_key) and append it to the order note, so you can see it
+// in admin and surface it in a notification / Shopify Flow email.
+export async function setOrderLicenseKey(orderGid, key) {
+  const mutation = `
+    mutation($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        userErrors { field message }
+      }
+    }`;
+  const variables = {
+    metafields: [{
+      ownerId: orderGid,
+      namespace: "openxmljson",
+      key: "license_key",
+      type: "single_line_text_field",
+      value: key,
+    }],
+  };
+  const res = await adminGraphQL(mutation, variables);
+  const errs = res?.data?.metafieldsSet?.userErrors || [];
+  if (errs.length) {
+    throw new Error(`metafieldsSet: ${errs.map((e) => e.message).join("; ")}`);
+  }
+}
+
 // Look up entitlement for an email. Returns { valid, tier, status,
 // expires_at, reason }. Active subscription wins; otherwise a paid order.
 export async function checkEntitlementByEmail(email) {

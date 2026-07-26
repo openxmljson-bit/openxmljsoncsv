@@ -12,7 +12,6 @@ secret — it calls our backend and shows read-only status.
 | `client.py` | `LicenseClient`: `request_otp`, `verify_otp`, `verify_key` → `Entitlement` |
 | `cache.py` | local entitlement cache (keyring, file fallback) with TTL |
 | `ui.py` | `LicenseDialog` (email+code / key), `ensure_licensed()` |
-| `oauth.py`, `pkce.py`, `entitlement.py` | **unused** alternative Shopify hosted-OAuth path; safe to delete |
 
 ## Usage
 
@@ -34,7 +33,7 @@ whether to soft- or hard-gate.
 
 | Var | Default |
 |-----|---------|
-| `OXJ_API_BASE` | `https://api.openxmljson.com` |
+| `OXJ_API_BASE` | `https://checkapi.openxmljson.com` |
 | `OXJ_STORE_URL` | `https://www.openxmljson.com` |
 | `OXJ_API_TIMEOUT` | `20` |
 | `OXJ_LICENSE_CACHE_HOURS` | `24` |

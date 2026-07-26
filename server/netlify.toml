@@ -21,3 +21,8 @@
   from = "/verify"
   to = "/.netlify/functions/verify"
   status = 200
+
+[[redirects]]
+  from = "/orders-paid"
+  to = "/.netlify/functions/orders-paid"
+  status = 200

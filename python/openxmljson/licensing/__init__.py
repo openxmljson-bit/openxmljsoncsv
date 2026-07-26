@@ -16,7 +16,7 @@ This subpackage is self-contained and is NOT wired into app startup — import
 and call it explicitly (see licensing/README.md).
 """
 
-from openxmljson.licensing.config import ApiConfig, ShopifyConfig  # noqa: F401
+from openxmljson.licensing.config import ApiConfig  # noqa: F401
 from openxmljson.licensing.client import (  # noqa: F401
     Entitlement,
     LicenseClient,

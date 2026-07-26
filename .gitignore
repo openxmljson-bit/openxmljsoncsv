@@ -18,3 +18,6 @@ __pycache__/
 # PyInstaller / packaging build artifacts
 /build
 /dist
+
+# Local Netlify folder
+.netlify

@@ -67,9 +67,9 @@ class LicenseDialog(QDialog):
         layout.addWidget(intro)
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._otp_tab(), "Email code")
         self.tabs.addTab(self._key_tab(), "License key")
-        layout.addWidget(self.tabs)
+        self.tabs.addTab(self._otp_tab(), "Email code")
+        layout.addWidget(self.tabs)   # License key first (default active tab)
 
         self.status = QLabel("")
         self.status.setWordWrap(True)

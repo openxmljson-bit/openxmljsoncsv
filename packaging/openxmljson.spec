@@ -115,10 +115,39 @@ KEEP_PLUGIN_DIRS = (
 )
 
 
+# Large Qt libraries/frameworks the app never uses (it imports only QtCore,
+# QtGui and QtWidgets). Excluding the Python bindings above doesn't stop
+# PyInstaller's Qt hooks from copying these shared libraries, so we drop them
+# by name here. Biggest win: QtWebEngineCore (~166 MB, doubled on universal2).
+# Substrings are matched against the (lowercased) destination path, so they
+# catch both Linux .so files under Qt/lib and macOS .framework bundles.
+# NOTE: never add core/gui/widgets/dbus or ICU (icudata/icuuc/icui18n) here —
+# those are required for the app to launch.
+_DROP_QT = (
+    "webengine", "webview", "webchannel", "websockets",
+    "quick", "qml", "qmlmodels", "qmlcompiler", "qmlworkerscript",
+    "quick3d", "3dcore", "3drender", "3dinput", "3dlogic",
+    "3danimation", "3dextras", "3dquick",
+    "charts", "graphs", "datavisualization",
+    "designer", "shadertools",
+    "location", "positioning", "geoservices",
+    "wayland", "multimedia", "spatialaudio",
+    "pdf", "sql", "qttest", "qt6test", "virtualkeyboard",
+    "assimp", "sceneimport", "assetimporter",
+    "quicktemplates", "quickcontrols", "quickdialogs", "quickwidgets",
+    "quicklayouts", "quickshapes", "quicktimeline", "quickparticles",
+    "labsanimation", "labsqmlmodels",
+    "network",  # QtNetwork/NetworkAuth — the app uses `requests`, not Qt net
+)
+
+
 def _keep(dest: str) -> bool:
     d = dest.replace("\\", "/").lower()
     # Drop all Qt translation catalogs.
     if "/translations/" in d or d.endswith(".qm"):
+        return False
+    # Drop the entire QML module tree (we ship no QML/Quick UI).
+    if "/qml/" in d:
         return False
     # Within Qt plugins, keep only the whitelisted categories.
     marker = "/plugins/"
@@ -132,15 +161,20 @@ def _keep(dest: str) -> bool:
 
 
 def _drop_binary(dest: str) -> bool:
-    """Binaries to remove outright. PyYAML's _yaml C accelerator ships as a
-    THIN (single-arch) .so via pip wheels and aborts the macOS universal2
-    build ("not a fat binary"). We only use pure-Python yaml.safe_load_all /
-    safe_dump, so drop it here regardless of how it entered a.binaries."""
-    base = dest.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return base.startswith("_yaml.") or base.startswith("_yaml-")
+    """Binaries to remove outright.
+
+    * PyYAML's _yaml C accelerator ships THIN (single-arch) via pip wheels and
+      aborts the macOS universal2 build; we use pure-Python yaml, so drop it.
+    * Large unused Qt libraries/frameworks (see _DROP_QT) — biggest size win.
+    """
+    d = dest.replace("\\", "/").lower()
+    base = d.rsplit("/", 1)[-1]
+    if base.startswith("_yaml.") or base.startswith("_yaml-"):
+        return True
+    return any(tok in d for tok in _DROP_QT)
 
 
-a.datas = [t for t in a.datas if _keep(t[0])]
+a.datas = [t for t in a.datas if _keep(t[0]) and not _drop_binary(t[0])]
 a.binaries = [t for t in a.binaries if _keep(t[0]) and not _drop_binary(t[0])]
 
 # Stripping symbols shrinks the bundle on macOS/Linux, but on Windows the

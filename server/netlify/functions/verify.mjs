@@ -3,9 +3,10 @@
 //   { email, licenseKey }  -> key mode: verify signed key (no Shopify needed)
 // Returns { valid, tier, email, status, expires_at, reason }.
 
-import { verifyCode } from "../../lib/otp.mjs";
-import { checkEntitlementByEmail } from "../../lib/shopify.mjs";
 import { verifyKey } from "../../lib/keys.mjs";
+// NOTE: the OTP path (verifyCode, checkEntitlementByEmail) is imported lazily
+// inside the OTP branch below, so license-key verification pulls in no extra
+// dependencies (e.g. @netlify/blobs is only needed when OTP is actually used).
 
 const json = (status, body) =>
   new Response(JSON.stringify(body), {
@@ -45,6 +46,10 @@ export default async (req) => {
     // -- OTP mode (email proof, then live Shopify entitlement) -------------
     if (!email.includes("@")) return json(400, { message: "Invalid email." });
     if (!code) return json(400, { message: "Enter the emailed code." });
+
+    // Lazy: only load OTP/Shopify code (and their deps) for the OTP path.
+    const { verifyCode } = await import("../../lib/otp.mjs");
+    const { checkEntitlementByEmail } = await import("../../lib/shopify.mjs");
 
     let proven;
     try {

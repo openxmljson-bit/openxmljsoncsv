@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
 )
 
 from openxmljson import memory
-from openxmljson.edition import EDITION_BADGE_COLOR, EDITION_LABEL
 from openxmljson.styles import Style
 
 #: Accent color for the file-size hint in the recent list (amber/orange).
@@ -133,8 +132,8 @@ class WelcomeWidget(QWidget):
         self._card.setObjectName("welcomeCard")
         self._card.setFixedWidth(460)
         col = QVBoxLayout(self._card)
-        col.setContentsMargins(40, 32, 40, 32)
-        col.setSpacing(6)
+        col.setContentsMargins(44, 34, 44, 34)
+        col.setSpacing(10)
 
         self._title = QLabel("OPENXMLJSON")
         self._title.setObjectName("welcomeTitle")
@@ -147,9 +146,10 @@ class WelcomeWidget(QWidget):
         self._tagline.setAlignment(Qt.AlignmentFlag.AlignCenter)
         col.addWidget(self._tagline)
 
+        col.addSpacing(6)
         chips = QHBoxLayout()
-        chips.setSpacing(6)
-        chips.setContentsMargins(0, 10, 0, 10)
+        chips.setSpacing(8)
+        chips.setContentsMargins(0, 16, 0, 16)
         self._chips = []
         for fmt in ("JSON", "NDJSON", "XML", "CSV", "TSV", "YAML"):
             chip = QLabel(fmt)
@@ -161,7 +161,7 @@ class WelcomeWidget(QWidget):
         col.addLayout(chips)
 
         actions = QHBoxLayout()
-        actions.setSpacing(6)
+        actions.setSpacing(10)
         for label, slot in (
             ("Open File…", window.open_dialog),
             ("Open URL…", window.open_url),
@@ -174,18 +174,20 @@ class WelcomeWidget(QWidget):
             actions.addWidget(btn)
         col.addLayout(actions)
 
+        col.addSpacing(12)
         self._recent_title = QLabel("Recent")
         self._recent_title.setObjectName("welcomeSection")
         col.addWidget(self._recent_title)
+        col.addSpacing(2)
         self._recent_box = QVBoxLayout()
-        self._recent_box.setSpacing(2)
+        self._recent_box.setSpacing(3)   # tight so all 15 recents fit
         col.addLayout(self._recent_box)
 
         self._hint = QLabel(
             "Tip: drag a file onto the window, or press F1 for all features."
         )
         self._hint.setObjectName("welcomeHint")
-        col.addSpacing(10)
+        col.addSpacing(12)
         col.addWidget(self._hint)
 
         # Byline below the card (not inside it).
@@ -193,15 +195,12 @@ class WelcomeWidget(QWidget):
         self._byline.setObjectName("welcomeByline")
         self._byline.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Edition badge — a colored pill positioned on the card's top edge in
-        # _relayout (a real child widget so it renders ABOVE the card).
-        self._edition_badge = QLabel(EDITION_LABEL, self)
-        _badge_bg = EDITION_BADGE_COLOR
-        self._edition_badge.setStyleSheet(
-            "QLabel { background: %s; color: #ffffff; font-weight: 600;"
-            " font-size: 13px; padding: 5px 12px; border-radius: 6px; }"
-            % _badge_bg)
-        self._edition_badge.adjustSize()
+        # License badge — a colored pill (Trial red / Essential blue /
+        # Premium green) positioned on the card's top edge in _relayout (a real
+        # child widget so it renders ABOVE the card). Text/color set by
+        # _refresh_edition_badge() from the current license state.
+        self._edition_badge = QLabel("Trial", self)
+        self._refresh_edition_badge()
 
         # -- feature boxes ---------------------------------------------------
         self._boxes = []
@@ -284,6 +283,29 @@ class WelcomeWidget(QWidget):
         mc.addStretch(1)
         self._mem.hide()
 
+        # -- right-side "Membership" panel (below the memory card) -----------
+        self._member = QFrame(self)
+        self._member.setObjectName("welcomeCard")
+        self._member.setFixedWidth(STATS_W)
+        pc = QVBoxLayout(self._member)
+        pc.setContentsMargins(20, 18, 20, 18)
+        pc.setSpacing(8)
+        self._member_title = QLabel("Membership")
+        self._member_title.setObjectName("statsTitle")
+        pc.addWidget(self._member_title)
+        self._member_rows = QVBoxLayout()
+        self._member_rows.setSpacing(10)
+        pc.addLayout(self._member_rows)
+        # Action link: "Activate" when unlicensed, "Manage subscription" when active.
+        self._member_action = QPushButton("Activate")
+        self._member_action.setObjectName("memRefresh")   # reuse blue link style
+        self._member_action.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._member_action.setFlat(True)
+        self._member_action.clicked.connect(self._on_member_action)
+        pc.addWidget(self._member_action)
+        pc.addStretch(1)
+        self._member.hide()
+
         self._timer = QTimer(self)
         self._timer.setInterval(33)  # ~30 fps
         self._timer.timeout.connect(self._tick)
@@ -299,6 +321,8 @@ class WelcomeWidget(QWidget):
             if w is not None:
                 w.deleteLater()
         recent = self._window._recent_list()[:15]
+        self._recent_title.setText(f"Recent ({len(recent)})" if recent
+                                   else "Recent")
         self._recent_title.setVisible(bool(recent))
         for path in recent:
             size = _human_size(path)
@@ -317,6 +341,8 @@ class WelcomeWidget(QWidget):
             self._recent_box.addWidget(link)
         self._build_stats()
         self._build_memory()
+        self._build_membership()
+        self._refresh_edition_badge()
         self._relayout()  # reposition/show the stats panel for new counts
 
     def _build_stats(self) -> None:
@@ -420,6 +446,92 @@ class WelcomeWidget(QWidget):
             self._window.free_temp_files()
         self._build_memory()
 
+    # -- membership -----------------------------------------------------------
+
+    def _load_entitlement(self):
+        """Cached license entitlement, or None. Never raises."""
+        try:
+            from openxmljson.licensing import cache
+            from openxmljson.licensing.config import ApiConfig
+
+            return cache.load(ApiConfig.from_env())
+        except Exception:
+            return None
+
+    def _refresh_edition_badge(self) -> None:
+        """Set the center-box pill to Trial / Essential / Premium + color."""
+        try:
+            from openxmljson.licensing import status as _lic
+            label, color = _lic.membership_badge()
+        except Exception:
+            label, color = "Trial", "#D9433B"
+        self._edition_badge.setText(label)
+        self._edition_badge.setStyleSheet(
+            "QLabel { background: %s; color: #ffffff; font-weight: 600;"
+            " font-size: 13px; padding: 5px 12px; border-radius: 6px; }"
+            % color)
+        self._edition_badge.adjustSize()
+
+    def _build_membership(self) -> None:
+        """Rebuild the Membership panel from the cached license status."""
+        while self._member_rows.count():
+            item = self._member_rows.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        ent = self._load_entitlement()
+        active = bool(ent and ent.valid)
+        if active:
+            from openxmljson.licensing import status as _lic
+
+            plan_label, _ = _lic.membership_badge()   # e.g. "Netcore Unbxd"
+            lifetime = not ent.expires_at
+            rows = [("Status", "Active"),
+                    ("Plan", plan_label)]
+            if ent.email:
+                rows.append(("Account", _middle_ellipsis(ent.email, 24)))
+            rows.append(("Valid", "Lifetime" if lifetime
+                         else f"until {ent.expires_at[:10]}"))
+            # Nothing to manage for a lifetime/internal license.
+            self._member_action.setVisible(not lifetime)
+            self._member_action.setText("Manage subscription")
+        else:
+            rows = [("Status", "Not activated")]
+            self._member_action.setVisible(True)
+            self._member_action.setText("Activate")
+        for label, value in rows:
+            row = QWidget()
+            row.setObjectName("statRow")
+            hb = QHBoxLayout(row)
+            hb.setContentsMargins(0, 0, 0, 0)
+            hb.setSpacing(8)
+            name = QLabel(label)
+            name.setObjectName("statName")
+            val = QLabel(value)
+            val.setObjectName("statCount")
+            hb.addWidget(name)
+            hb.addStretch(1)
+            hb.addWidget(val)
+            self._member_rows.addWidget(row)
+
+    def _on_member_action(self) -> None:
+        ent = self._load_entitlement()
+        if ent and ent.valid:
+            # Active → open the store to manage/cancel.
+            try:
+                from openxmljson.licensing.config import ApiConfig
+                from PySide6.QtGui import QDesktopServices
+                from PySide6.QtCore import QUrl
+
+                QDesktopServices.openUrl(QUrl(ApiConfig.from_env().store_url))
+            except Exception:
+                pass
+        elif hasattr(self._window, "activate_license"):
+            self._window.activate_license()
+        self._build_membership()
+        self._refresh_edition_badge()
+        self._relayout()
+
     # -- layout & animation ---------------------------------------------------
 
     def set_mode(self, mode: str) -> None:
@@ -458,9 +570,8 @@ class WelcomeWidget(QWidget):
         self._card.adjustSize()
         cw, ch = self._card.width(), self._card.height()
         cx = (w - cw) // 2
-        # Bias the card upward: top gap ~20% of the leftover space (rather than
-        # dead-centered) so it sits nearer the top.
-        cy = max(20, int((h - ch) * 0.20))
+        # Anchor the card near the top (level with the right-side cards).
+        cy = 18
         self._card.move(cx, cy)
         card_mid_y = cy + ch / 2
 
@@ -539,12 +650,13 @@ class WelcomeWidget(QWidget):
         # every mode (independent of the feature boxes), when there's room to
         # the right of the centered card.
         self._stats.adjustSize()
-        sx = w - STATS_W - 32
+        sx = w - STATS_W - 48   # a bit off the right edge, clear of watermark
         has_room = sx > cx + cw + 20
         show_stats = self._has_stats and has_room
+        top_y = 18   # right cards anchored near the top (matches the card)
         self._stats.setVisible(show_stats)
         if show_stats:
-            self._stats.move(sx, 28)  # anchored near the top
+            self._stats.move(sx, top_y)
 
         # Memory panel: directly below the stats card (or at the top if the
         # stats card is hidden), whenever there's room right of the card and
@@ -552,9 +664,18 @@ class WelcomeWidget(QWidget):
         self._mem.adjustSize()
         show_mem = has_room and self._mode != "none"
         self._mem.setVisible(show_mem)
+        my = top_y
         if show_mem:
-            my = (28 + self._stats.height() + 16) if show_stats else 28
+            my = (top_y + self._stats.height() + 16) if show_stats else top_y
             self._mem.move(sx, my)
+
+        # Membership panel: directly below the memory card (same conditions).
+        self._member.adjustSize()
+        show_member = has_room and self._mode != "none"
+        self._member.setVisible(show_member)
+        if show_member:
+            base = my + (self._mem.height() + 16 if show_mem else 0)
+            self._member.move(sx, base)
 
     @staticmethod
     def _clamp(value, lo, hi, toward):
@@ -584,17 +705,20 @@ class WelcomeWidget(QWidget):
         return points[-1]
 
     def _draw_watermark(self, painter: QPainter) -> None:
-        """Big, bold, semi-transparent 'NARIK' in the bottom-right corner —
-        subtle and theme-aware (light on dark, dark on light)."""
+        """Bold, semi-transparent 'NARIK' along the bottom, centered under the
+        center card's width — subtle and theme-aware."""
         text = "NARIK"
         font = QFont(self.font())
         font.setBold(True)
-        font.setPixelSize(max(40, int(self.height() * 0.16)))
+        font.setPixelSize(max(28, int(self.height() * 0.10)))  # smaller
         painter.setFont(font)
         fm = QFontMetrics(font)
-        margin = 28
-        x = self.width() - fm.horizontalAdvance(text) - margin
-        y = self.height() - margin  # text baseline
+        margin = 24
+        # Center on the right-side card column (same span as the stats /
+        # memory / membership cards): sx .. sx + STATS_W.
+        sx = self.width() - STATS_W - 48
+        x = sx + (STATS_W - fm.horizontalAdvance(text)) // 2
+        y = self.height() - margin  # text baseline at the bottom margin
         color = QColor(self._style.text)
         color.setAlpha(30)          # transparent grey
         painter.setPen(color)
@@ -695,8 +819,8 @@ class WelcomeWidget(QWidget):
             }}
             #welcomeHint {{ color: {s.guide.name()}; font-size: 12px; }}
             #welcomeByline {{
-                background: transparent; color: {s.text.name()};
-                font-size: 16px; font-weight: 600; letter-spacing: 0.5px;
+                background: transparent; color: #D97757;
+                font-size: 20px; font-weight: 800; letter-spacing: 0.6px;
             }}
             #welcomeChip {{
                 color: {s.placeholder.name()};

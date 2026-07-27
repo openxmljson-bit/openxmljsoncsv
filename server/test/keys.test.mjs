@@ -1,4 +1,4 @@
-// Unit tests for the license-key HMAC logic (node --test).
+// Unit tests for the compact license-key logic (node --test).
 
 import assert from "node:assert";
 import { test } from "node:test";
@@ -6,24 +6,29 @@ import { issueKey, verifyKey } from "../lib/keys.mjs";
 
 const SECRET = "test-secret-please-change";
 
-test("valid key round-trips", () => {
-  const key = issueKey({ email: "A@B.com", tier: "Pro", days: 30 }, SECRET);
+test("valid key round-trips and is short", () => {
+  const key = issueKey({ email: "A@B.com", tier: "Premium", days: 30 }, SECRET);
+  assert.ok(key.length <= 34, `key too long: ${key.length}`);
+  assert.match(key, /^[0-9A-Z-]+$/); // Crockford + dashes only
   const r = verifyKey(key, SECRET, { email: "a@b.com" });
   assert.equal(r.valid, true);
-  assert.equal(r.tier, "Pro");
-  assert.equal(r.email, "a@b.com");
+  assert.equal(r.tier, "Premium");
   assert.ok(r.expires_at);
 });
 
-test("tampered payload fails", () => {
+test("dashes/spaces/lowercase are tolerated on input", () => {
   const key = issueKey({ email: "a@b.com" }, SECRET);
-  const [p, s] = key.split(".");
-  const forged = Buffer.from(
-    JSON.stringify({ email: "a@b.com", tier: "Enterprise", exp: 0 }))
-    .toString("base64url");
-  assert.equal(verifyKey(`${forged}.${s}`, SECRET).valid, false);
-  // sanity: original still valid
-  assert.equal(verifyKey(`${p}.${s}`, SECRET).valid, true);
+  const messy = key.replace(/-/g, "").toLowerCase();
+  assert.equal(verifyKey(messy, SECRET, { email: "a@b.com" }).valid, true);
+});
+
+test("tampered key fails", () => {
+  const key = issueKey({ email: "a@b.com" }, SECRET);
+  // Flip one character (first char of the last group).
+  const chars = key.split("");
+  const i = key.lastIndexOf("-") + 1;
+  chars[i] = chars[i] === "0" ? "1" : "0";
+  assert.equal(verifyKey(chars.join(""), SECRET).valid, false);
 });
 
 test("wrong secret fails", () => {
@@ -32,7 +37,6 @@ test("wrong secret fails", () => {
 });
 
 test("expired key fails", () => {
-  // days<0 -> exp in the past
   const key = issueKey({ email: "a@b.com", days: -1 }, SECRET);
   const r = verifyKey(key, SECRET);
   assert.equal(r.valid, false);
@@ -49,4 +53,14 @@ test("no-expiry key stays valid", () => {
   const r = verifyKey(key, SECRET);
   assert.equal(r.valid, true);
   assert.equal(r.expires_at, "");
+});
+
+test("tier is preserved", () => {
+  const key = issueKey({ email: "a@b.com", tier: "Essential", days: 10 }, SECRET);
+  assert.equal(verifyKey(key, SECRET, { email: "a@b.com" }).tier, "Essential");
+});
+
+test("unknown tier falls back to Essential", () => {
+  const key = issueKey({ email: "a@b.com", tier: "Nonsense", days: 10 }, SECRET);
+  assert.equal(verifyKey(key, SECRET, { email: "a@b.com" }).tier, "Essential");
 });

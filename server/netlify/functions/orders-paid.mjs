@@ -13,6 +13,7 @@
 import crypto from "node:crypto";
 import { issueKey } from "../../lib/keys.mjs";
 import { setOrderLicenseKey } from "../../lib/shopify.mjs";
+import { sendLicenseEmail } from "../../lib/gmail.mjs";
 
 function verifyShopifyHmac(rawBody, headerHmac, secret) {
   if (!secret || !headerHmac) return false;
@@ -21,6 +22,30 @@ function verifyShopifyHmac(rawBody, headerHmac, secret) {
   const a = Buffer.from(digest);
   const b = Buffer.from(headerHmac);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Decide the tier from the order's line items. Matches product title / name /
+// SKU / variant against "premium" then "essential" (case-insensitive).
+// Premium wins if both appear. Falls back to LICENSE_DEFAULT_TIER or Essential.
+function deriveTier(order) {
+  const items = order.line_items || [];
+  const hay = items
+    .map((li) => `${li.title || ""} ${li.name || ""} ${li.sku || ""} ` +
+      `${li.variant_title || ""}`)
+    .join(" ")
+    .toLowerCase();
+  if (hay.includes("premium")) return "Premium";
+  if (hay.includes("essential")) return "Essential";
+  return process.env.LICENSE_DEFAULT_TIER || "Essential";
+}
+
+// Validity per tier: Essential = monthly, Premium = annual. Overridable via
+// env so you can tweak without a code change.
+function tierDays(tier) {
+  if (tier === "Premium") {
+    return parseInt(process.env.PREMIUM_DAYS || "365", 10);
+  }
+  return parseInt(process.env.ESSENTIAL_DAYS || "30", 10);
 }
 
 export default async (req) => {
@@ -48,22 +73,34 @@ export default async (req) => {
       return new Response("ok", { status: 200 });   // ack; nothing to do
     }
 
-    // Tier/duration: customize by mapping line-item title or SKU. Defaults
-    // apply to every paid order for now.
-    const tier = process.env.LICENSE_DEFAULT_TIER || "Pro";
-    const days = parseInt(process.env.LICENSE_DEFAULT_DAYS || "365", 10);
+    // Tier comes from what was purchased (Essential / Premium); its validity
+    // follows the plan: Essential monthly, Premium annual.
+    const tier = deriveTier(order);
+    const days = tierDays(tier);
 
     const secret = process.env.LICENSE_SIGNING_SECRET;
     if (!secret) throw new Error("LICENSE_SIGNING_SECRET is not set");
     const key = issueKey({ email, tier, days }, secret);
+    const expiresAt = new Date(Date.now() + days * 86_400_000)
+      .toISOString().slice(0, 10);   // YYYY-MM-DD
 
-    // Attach to the order so you can email it (via notification/Flow) or read
-    // it in admin. admin_graphql_api_id is the order's GID.
-    const gid = order.admin_graphql_api_id ||
-      `gid://shopify/Order/${order.id}`;
-    await setOrderLicenseKey(gid, key);
+    // Email the key to the buyer — this is the primary delivery path.
+    const name = order.customer?.first_name || "";
+    await sendLicenseEmail({ to: email, name, tier, key, expiresAt, days });
+    console.log(
+      `orders-paid: emailed ${tier} key (${days}d, exp ${expiresAt}) to ` +
+      `${email} (order ${order.id})`);
 
-    console.log(`orders-paid: issued ${tier} key for ${email} (order ${order.id})`);
+    // Also record it on the order (metafield) as a best-effort backup so it's
+    // visible in admin. A failure here must NOT stop delivery, since the email
+    // already went out — so swallow its error separately.
+    try {
+      const gid = order.admin_graphql_api_id ||
+        `gid://shopify/Order/${order.id}`;
+      await setOrderLicenseKey(gid, key);
+    } catch (metaErr) {
+      console.warn("orders-paid: metafield write failed (email sent):", metaErr);
+    }
   } catch (err) {
     // Log, but still 200 so Shopify doesn't hammer retries; you can re-issue
     // manually with sign-key if needed.

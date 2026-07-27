@@ -14,7 +14,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
-    QTabWidget, QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget,
 )
 
 from openxmljson.licensing import cache
@@ -60,16 +60,27 @@ class LicenseDialog(QDialog):
     # -- UI --------------------------------------------------------------------
     def _build(self):
         layout = QVBoxLayout(self)
-        intro = QLabel("Sign in to verify your subscription. Your login "
-                       "happens with Shopify; we only store your license "
-                       "status.")
+        intro = QLabel("Enter the license key and the email you used to "
+                       "purchase. Your key was emailed to you after checkout.")
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
-        self.tabs = QTabWidget()
-        self.tabs.addTab(self._key_tab(), "License key")
-        self.tabs.addTab(self._otp_tab(), "Email code")
-        layout.addWidget(self.tabs)   # License key first (default active tab)
+        form = QWidget()
+        v = QVBoxLayout(form)
+        v.setContentsMargins(0, 8, 0, 8)
+        self.key_email = QLineEdit()
+        self.key_email.setPlaceholderText("you@example.com")
+        v.addWidget(QLabel("Email"))
+        v.addWidget(self.key_email)
+        self.key_value = QLineEdit()
+        self.key_value.setPlaceholderText("XXXX-XXXX-XXXX-XXXX-XXXX-XXXX")
+        v.addWidget(QLabel("License key"))
+        v.addWidget(self.key_value)
+        self.key_verify = QPushButton("Verify")
+        self.key_verify.clicked.connect(self._verify_key)
+        self.key_value.returnPressed.connect(self._verify_key)
+        v.addWidget(self.key_verify)
+        layout.addWidget(form)
 
         self.status = QLabel("")
         self.status.setWordWrap(True)
@@ -84,44 +95,6 @@ class LicenseDialog(QDialog):
         self.close_btn.clicked.connect(self.reject)
         row.addWidget(self.close_btn)
         layout.addLayout(row)
-
-    def _otp_tab(self) -> QWidget:
-        w = QWidget()
-        v = QVBoxLayout(w)
-        self.otp_email = QLineEdit()
-        self.otp_email.setPlaceholderText("you@example.com")
-        v.addWidget(QLabel("Email"))
-        v.addWidget(self.otp_email)
-        send = QHBoxLayout()
-        self.send_btn = QPushButton("Send code")
-        self.send_btn.clicked.connect(self._send_code)
-        send.addWidget(self.send_btn)
-        send.addStretch(1)
-        v.addLayout(send)
-        self.otp_code = QLineEdit()
-        self.otp_code.setPlaceholderText("6-digit code")
-        v.addWidget(QLabel("Code"))
-        v.addWidget(self.otp_code)
-        self.otp_verify = QPushButton("Verify")
-        self.otp_verify.clicked.connect(self._verify_otp)
-        v.addWidget(self.otp_verify)
-        return w
-
-    def _key_tab(self) -> QWidget:
-        w = QWidget()
-        v = QVBoxLayout(w)
-        self.key_email = QLineEdit()
-        self.key_email.setPlaceholderText("you@example.com")
-        v.addWidget(QLabel("Email"))
-        v.addWidget(self.key_email)
-        self.key_value = QLineEdit()
-        self.key_value.setPlaceholderText("XXXX-XXXX-XXXX")
-        v.addWidget(QLabel("License key"))
-        v.addWidget(self.key_value)
-        self.key_verify = QPushButton("Verify")
-        self.key_verify.clicked.connect(self._verify_key)
-        v.addWidget(self.key_verify)
-        return w
 
     # -- actions ---------------------------------------------------------------
     def _run(self, fn, on_ok):
@@ -143,21 +116,9 @@ class LicenseDialog(QDialog):
         self._pool.start(task)
 
     def _set_busy(self, busy: bool):
-        for b in (self.send_btn, self.otp_verify, self.key_verify):
-            b.setEnabled(not busy)
+        self.key_verify.setEnabled(not busy)
         self.setCursor(Qt.CursorShape.WaitCursor if busy
                        else Qt.CursorShape.ArrowCursor)
-
-    def _send_code(self):
-        email = self.otp_email.text()
-        self._run(lambda: self.client.request_otp(email),
-                  lambda _r: self.status.setText(
-                      "Code sent — check your email."))
-
-    def _verify_otp(self):
-        email, code = self.otp_email.text(), self.otp_code.text()
-        self._run(lambda: self.client.verify_otp(email, code),
-                  self._on_entitlement)
 
     def _verify_key(self):
         email, key = self.key_email.text(), self.key_value.text()

@@ -41,10 +41,16 @@ def save(cfg: ApiConfig, ent: Entitlement) -> None:
     if not ent.valid:
         clear(cfg)
         return
+    # Lifetime licenses (no expiry date) are cached effectively forever so the
+    # app never needs to re-verify them online after the first activation.
+    if ent.expires_at:
+        cached_until = time.time() + cfg.cache_hours * 3600
+    else:
+        cached_until = time.time() + 100 * 365 * 24 * 3600   # ~100 years
     record = {
         "valid": True, "tier": ent.tier, "email": ent.email,
         "status": ent.status, "expires_at": ent.expires_at,
-        "cached_until": time.time() + cfg.cache_hours * 3600,
+        "cached_until": cached_until,
     }
     blob = json.dumps(record)
     kr = _keyring()

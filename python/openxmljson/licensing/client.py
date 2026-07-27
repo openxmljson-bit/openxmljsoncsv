@@ -52,30 +52,67 @@ class LicenseClient:
         self.cfg = cfg or ApiConfig.from_env()
         self._http = http
 
-    def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        http = self._http
-        if http is None:
-            import requests as http
+    def _urllib_post(self, url, payload):
+        """POST JSON with the stdlib (no `requests` dependency). Uses certifi
+        for TLS verification when available. Returns (status, body_dict)."""
+        import json as _json
+        import ssl
+        import urllib.error
+        import urllib.request
+
+        data = _json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, method="POST",
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json"})
         try:
-            resp = http.post(self.cfg.url(path), json=payload,
-                             headers={"Accept": "application/json"},
-                             timeout=self.cfg.request_timeout)
-        except Exception as exc:
+            import certifi
+            ctx = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            ctx = ssl.create_default_context()
+        try:
+            with urllib.request.urlopen(
+                    req, timeout=self.cfg.request_timeout, context=ctx) as r:
+                status = r.getcode()
+                raw = r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:   # 4xx/5xx carry a JSON body
+            status = exc.code
+            raw = exc.read().decode("utf-8", "replace") if exc.fp else ""
+        except Exception as exc:                # network/DNS/TLS failure
             raise LicenseError(
                 f"Couldn't reach the licensing server: {exc}") from exc
-        # 4xx often carries a JSON {error/message}; surface it nicely.
         try:
-            body = resp.json()
+            body = _json.loads(raw) if raw else {}
         except ValueError:
             body = {}
-        if resp.status_code == 429:
+        return status, body
+
+    def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        url = self.cfg.url(path)
+        if self._http is not None:      # injected fake in tests
+            try:
+                resp = self._http.post(
+                    url, json=payload, headers={"Accept": "application/json"},
+                    timeout=self.cfg.request_timeout)
+            except Exception as exc:
+                raise LicenseError(
+                    f"Couldn't reach the licensing server: {exc}") from exc
+            status = resp.status_code
+            try:
+                body = resp.json()
+            except ValueError:
+                body = {}
+        else:
+            status, body = self._urllib_post(url, payload)
+
+        if status == 429:
             raise LicenseError(
                 body.get("message")
                 or "Too many attempts — please wait a minute and try again.")
-        if resp.status_code >= 400:
+        if status >= 400:
             raise LicenseError(
                 body.get("message") or body.get("error")
-                or f"Server error ({resp.status_code}).")
+                or f"Server error ({status}).")
         if not isinstance(body, dict):
             raise LicenseError("Unexpected response from the licensing server.")
         return body

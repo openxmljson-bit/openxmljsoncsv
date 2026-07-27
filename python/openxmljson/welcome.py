@@ -233,13 +233,13 @@ class WelcomeWidget(QWidget):
         self._stats.setObjectName("welcomeCard")
         self._stats.setFixedWidth(STATS_W)
         sc = QVBoxLayout(self._stats)
-        sc.setContentsMargins(20, 18, 20, 18)
-        sc.setSpacing(8)
+        sc.setContentsMargins(20, 14, 20, 14)
+        sc.setSpacing(6)
         self._stats_title = QLabel("Files Served")
         self._stats_title.setObjectName("statsTitle")
         sc.addWidget(self._stats_title)
         self._stats_rows = QVBoxLayout()
-        self._stats_rows.setSpacing(10)
+        self._stats_rows.setSpacing(6)
         sc.addLayout(self._stats_rows)
         sc.addStretch(1)
         self._has_stats = False
@@ -250,8 +250,8 @@ class WelcomeWidget(QWidget):
         self._mem.setObjectName("welcomeCard")
         self._mem.setFixedWidth(STATS_W)
         mc = QVBoxLayout(self._mem)
-        mc.setContentsMargins(20, 18, 20, 18)
-        mc.setSpacing(8)
+        mc.setContentsMargins(20, 14, 20, 14)
+        mc.setSpacing(6)
         mem_head = QHBoxLayout()
         mem_head.setContentsMargins(0, 0, 0, 0)
         mem_head.setSpacing(6)
@@ -268,7 +268,7 @@ class WelcomeWidget(QWidget):
         mem_head.addWidget(self._mem_refresh)
         mc.addLayout(mem_head)
         self._mem_rows = QVBoxLayout()
-        self._mem_rows.setSpacing(10)
+        self._mem_rows.setSpacing(6)
         mc.addLayout(self._mem_rows)
         # "Free up temp files" link — shown only when leftovers exist.
         self._mem_free = QPushButton("Free up temp files")
@@ -288,13 +288,13 @@ class WelcomeWidget(QWidget):
         self._member.setObjectName("welcomeCard")
         self._member.setFixedWidth(STATS_W)
         pc = QVBoxLayout(self._member)
-        pc.setContentsMargins(20, 18, 20, 18)
-        pc.setSpacing(8)
+        pc.setContentsMargins(20, 14, 20, 14)
+        pc.setSpacing(6)
         self._member_title = QLabel("Membership")
         self._member_title.setObjectName("statsTitle")
         pc.addWidget(self._member_title)
         self._member_rows = QVBoxLayout()
-        self._member_rows.setSpacing(10)
+        self._member_rows.setSpacing(6)
         pc.addLayout(self._member_rows)
         # Action link: "Activate" when unlicensed, "Manage subscription" when active.
         self._member_action = QPushButton("Activate")
@@ -399,6 +399,8 @@ class WelcomeWidget(QWidget):
             hb.addStretch(1)
             hb.addWidget(value)
             self._stats_rows.addWidget(row)
+            row.show()
+        self._stats.adjustSize()
 
     def _build_memory(self) -> None:
         """Rebuild the Memory panel: available RAM plus the size thresholds
@@ -437,6 +439,8 @@ class WelcomeWidget(QWidget):
             hb.addStretch(1)
             hb.addWidget(val)
             self._mem_rows.addWidget(row)
+            row.show()
+        self._mem.adjustSize()
         self._mem_free.setVisible(count > 0)
         if count:
             self._mem_free.setText(
@@ -495,20 +499,22 @@ class WelcomeWidget(QWidget):
 
             plan_label, _ = _lic.membership_badge()   # e.g. "Netcore Unbxd"
             lifetime = not ent.expires_at
-            rows = [("Status", "Active"),
-                    ("Plan", plan_label)]
+            # (label, value, tooltip)
+            rows = [("Status", "Active", ""),
+                    ("Plan", plan_label, "")]
             if ent.email:
-                rows.append(("Account", _middle_ellipsis(ent.email, 24)))
+                rows.append(("Account", _middle_ellipsis(ent.email, 16),
+                             ent.email))   # full address on hover
             rows.append(("Valid", "Lifetime" if lifetime
-                         else f"until {ent.expires_at[:10]}"))
+                         else f"until {ent.expires_at[:10]}", ""))
             # Nothing to manage for a lifetime/internal license.
             self._member_action.setVisible(not lifetime)
             self._member_action.setText("Manage subscription")
         else:
-            rows = [("Status", "Not activated")]
+            rows = [("Status", "Not activated", "")]
             self._member_action.setVisible(True)
             self._member_action.setText("Activate")
-        for label, value in rows:
+        for label, value, tip in rows:
             row = QWidget()
             row.setObjectName("statRow")
             hb = QHBoxLayout(row)
@@ -518,10 +524,16 @@ class WelcomeWidget(QWidget):
             name.setObjectName("statName")
             val = QLabel(value)
             val.setObjectName("statCount")
+            if tip:
+                val.setToolTip(tip)
+                row.setToolTip(tip)
             hb.addWidget(name)
             hb.addStretch(1)
             hb.addWidget(val)
             self._member_rows.addWidget(row)
+            row.show()   # render on an already-visible card (runtime rebuild)
+        # Force the card to re-measure so new rows don't overlap the title.
+        self._member.adjustSize()
 
     def _on_member_action(self) -> None:
         ent = self._load_entitlement()
@@ -662,7 +674,8 @@ class WelcomeWidget(QWidget):
         sx = w - STATS_W - 48   # a bit off the right edge, clear of watermark
         has_room = sx > cx + cw + 20
         show_stats = self._has_stats and has_room and self._mode != "none"
-        top_y = 18   # right cards anchored near the top (matches the card)
+        top_y = 14   # right cards anchored near the top (matches the card)
+        gap = 10     # tight gap between the right cards
         self._stats.setVisible(show_stats)
         if show_stats:
             self._stats.move(sx, top_y)
@@ -675,7 +688,7 @@ class WelcomeWidget(QWidget):
         self._mem.setVisible(show_mem)
         my = top_y
         if show_mem:
-            my = (top_y + self._stats.height() + 16) if show_stats else top_y
+            my = (top_y + self._stats.height() + gap) if show_stats else top_y
             self._mem.move(sx, my)
 
         # Membership panel: directly below the memory card (same conditions).
@@ -683,7 +696,7 @@ class WelcomeWidget(QWidget):
         show_member = has_room and self._mode != "none"
         self._member.setVisible(show_member)
         if show_member:
-            base = my + (self._mem.height() + 16 if show_mem else 0)
+            base = my + (self._mem.height() + gap if show_mem else 0)
             self._member.move(sx, base)
 
     @staticmethod

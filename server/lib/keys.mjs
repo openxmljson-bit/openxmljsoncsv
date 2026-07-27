@@ -123,7 +123,7 @@ export function verifyKey(key, secret, { email } = {}) {
 
   return {
     valid: true,
-    tier: TIERS[header[1]] || "Pro",
+    tier: TIERS[header[1]] || "Essential",
     expires_at: expDays ? new Date(expDays * DAY_MS).toISOString() : "",
     reason: "Valid license key",
   };

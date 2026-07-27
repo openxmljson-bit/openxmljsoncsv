@@ -13,7 +13,7 @@ if (!secret) {
   console.error("Set LICENSE_SIGNING_SECRET first.");
   process.exit(1);
 }
-const [email, tier = "Pro", days = "365"] = process.argv.slice(2);
+const [email, tier = "Essential", days = "365"] = process.argv.slice(2);
 if (!email) {
   console.error("Usage: sign-key.mjs <email> [tier] [days]");
   process.exit(1);

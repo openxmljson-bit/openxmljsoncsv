@@ -3708,7 +3708,9 @@ class MainWindow(QMainWindow):
         LicenseDialog(parent=self).exec()
         self._refresh_license_badge()
         if hasattr(self, "_welcome"):
-            self._welcome.refresh()   # update badge + Membership card
+            # Only refresh the license badge + Membership card — do NOT rebuild
+            # the recent list (activation doesn't change it).
+            self._welcome.refresh_license_ui()
 
     def _refresh_license_badge(self) -> None:
         """Show the current license state in the status bar: Trial (red),

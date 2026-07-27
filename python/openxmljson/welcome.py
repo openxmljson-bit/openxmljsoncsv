@@ -339,6 +339,7 @@ class WelcomeWidget(QWidget):
             link.setCursor(Qt.CursorShape.PointingHandCursor)
             link.clicked.connect(lambda p=path: self._window.open_path(p))
             self._recent_box.addWidget(link)
+            link.show()   # ensure re-added rows render on an already-visible card
         self._build_stats()
         self._build_memory()
         self._build_membership()
@@ -457,6 +458,14 @@ class WelcomeWidget(QWidget):
             return cache.load(ApiConfig.from_env())
         except Exception:
             return None
+
+    def refresh_license_ui(self) -> None:
+        """Update only the license-dependent UI — the center-box badge and the
+        Membership card — without rebuilding the recent list or stats. Used
+        after the Activate dialog closes (activation never changes recents)."""
+        self._build_membership()
+        self._refresh_edition_badge()
+        self._relayout()
 
     def _refresh_edition_badge(self) -> None:
         """Set the center-box pill to Trial / Essential / Premium + color."""

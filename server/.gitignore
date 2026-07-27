@@ -1,0 +1,6 @@
+# Never commit real secrets or installed deps.
+.env
+.env.*
+!.env.example
+node_modules/
+.netlify/

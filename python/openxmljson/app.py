@@ -48,9 +48,7 @@ from PySide6.QtWidgets import (
 from openxmljson import Document, LazyDocument, NATIVE_AVAILABLE
 from openxmljson.activity import ActivityLights
 from openxmljson.convert import timestamped_name
-from openxmljson.edition import (
-    ENFORCE_SIZE_GATE, JSON_MAX_BYTES, UPDATES_ENABLED,
-)
+from openxmljson.edition import TRIAL_MAX_BYTES, UPDATES_ENABLED
 from openxmljson.docview import DocumentView
 from openxmljson.styles import WATERMARK_TEXT, resolve, stylesheet
 from openxmljson.tree import EXPAND_ALL_CONFIRM_NODES, EXPAND_ALL_MAX_NODES
@@ -73,7 +71,9 @@ YAML_MAX_BYTES = 32 * 1024 * 1024
 
 #: Extensions the engine parses as non-JSON structured formats; anything else
 #: (.json/.jsonl/.ndjson and unknown) is treated as JSON.
-_NON_JSON_EXTS = (".xml", ".csv", ".tsv", ".tab")
+#: Data formats capped in Trial mode (no valid license). Plain text is not.
+_GATED_EXTS = (".json", ".jsonl", ".ndjson", ".xml", ".csv", ".tsv", ".tab",
+               ".yaml", ".yml")
 
 
 def _looks_ndjson(path: str) -> bool:
@@ -784,6 +784,14 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self._type_label)
         self._name_label = QLabel(WATERMARK_TEXT)
         self.statusBar().addPermanentWidget(self._name_label)
+        # License status badge — click to open the Activate dialog.
+        self._license_label = QLabel("")
+        self._license_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._license_label.setToolTip("Click to activate or manage your "
+                                       "subscription")
+        self._license_label.mousePressEvent = (
+            lambda _e: self.activate_license())
+        self.statusBar().addPermanentWidget(self._license_label)
         self._lights = ActivityLights(self._style)
         self.statusBar().addPermanentWidget(self._lights)
         # Async open state.
@@ -804,6 +812,7 @@ class MainWindow(QMainWindow):
         # Drag & drop files onto the window.
         self.setAcceptDrops(True)
 
+        self._prune_recent()   # drop deleted/moved files from the recent list
         self._apply_style()
         self._welcome.set_mode(str(self._settings.value("welcome_mode", "center")))
         self._update_central()  # show the welcome screen until a file opens
@@ -1813,11 +1822,14 @@ class MainWindow(QMainWindow):
             lambda: self.check_for_updates(manual=True))
         self._updates_action.setEnabled(UPDATES_ENABLED)
         help_menu.addSeparator()
+        self._action(help_menu, "Activate…", self.activate_license)
         self._action(help_menu, "About OPENXMLJSON", self.show_about)
 
         # Initial enable/disable for the empty (no-document) state.
         self._sync_tools_controls()
         self._sync_scope_combo()
+        # Reflect any cached license state in the status badge at startup.
+        self._refresh_license_badge()
 
     @staticmethod
     def _strip_menu_icons(menu) -> None:
@@ -1864,6 +1876,8 @@ class MainWindow(QMainWindow):
         self._load_label.setStyleSheet(
             f"color: {self._style.text.name()}; padding: 0 8px;"
         )
+        if hasattr(self, "_license_label"):
+            self._refresh_license_badge()   # recolor for the new theme
         self._lights.set_style(self._style)
         self._welcome.set_style(self._style)
         for view in self._views():
@@ -1998,6 +2012,20 @@ class MainWindow(QMainWindow):
         # in a read-only text tab, bypassing the engine (and the lazy/large-file
         # machinery, which is about the structural index) entirely.
         ext = os.path.splitext(path)[1].lower()
+        # Trial size gate: without a valid license, cap the data formats
+        # (JSON/XML/CSV/TSV/YAML) at TRIAL_MAX_BYTES. A valid Essential/
+        # Premium license removes the cap. Plain text (.txt/.js/.log/.py) is
+        # never gated.
+        if ext in _GATED_EXTS:
+            from openxmljson.licensing import status as _lic
+            if not _lic.is_licensed():
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    size = 0
+                if TRIAL_MAX_BYTES and size > TRIAL_MAX_BYTES:
+                    self._show_size_upsell(size)
+                    return
         if ext in TEXT_EXTS:
             # A .log whose lines are JSON objects is really an NDJSON log —
             # open it through the engine (structured tree/table, lazy for huge
@@ -2010,22 +2038,6 @@ class MainWindow(QMainWindow):
         if ext in YAML_EXTS:
             self._open_yaml(path)
             return
-        # JSON size gate (free edition): cap JSON — not XML/CSV/TSV — at
-        # JSON_MAX_BYTES. Disabled in the premium edition (edition.py).
-        if ENFORCE_SIZE_GATE and JSON_MAX_BYTES and ext not in _NON_JSON_EXTS:
-            try:
-                size = os.path.getsize(path)
-            except OSError:
-                size = 0
-            if size > JSON_MAX_BYTES:
-                limit_mb = JSON_MAX_BYTES // (1024 * 1024)
-                QMessageBox.information(
-                    self, "Upgrade to open larger files",
-                    f"The Free edition supports JSON files up to {limit_mb} MB "
-                    f"(this file is {size / 1e6:.0f} MB).\n\n"
-                    "For larger files, please contact the sales team to upgrade "
-                    "to Premium.")
-                return
         use_lazy = self._lazy_for(path)
         # The RAM warning is only relevant to an eager, file-sized index;
         # lazy indexing loads on demand and won't exhaust memory.
@@ -2492,6 +2504,15 @@ class MainWindow(QMainWindow):
         recent = [p for p in self._recent_list() if p != path]
         recent.insert(0, path)
         self._settings.setValue("recent", recent[:MAX_RECENT])
+
+    def _prune_recent(self) -> None:
+        """Drop recent entries whose file no longer exists (deleted/moved).
+        Run once at startup so the menu, welcome card and side panel stay
+        accurate. Only removes when a path is confirmed missing."""
+        recent = self._recent_list()
+        existing = [p for p in recent if os.path.exists(p)]
+        if len(existing) != len(recent):
+            self._settings.setValue("recent", existing)
 
     def _recent_list(self) -> list:
         value = self._settings.value("recent", [])
@@ -3548,45 +3569,12 @@ class MainWindow(QMainWindow):
         self._welcome.set_mode(mode)
 
     def show_features(self) -> None:
-        from PySide6.QtWidgets import (
-            QDialog as _QDialog,
-            QLabel as _QLabel,
-            QScrollArea,
-            QVBoxLayout as _QVBoxLayout,
-        )
+        """Open the online Features page in the user's default browser."""
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
 
-        from openxmljson import features
-
-        dialog = _QDialog(self)
-        dialog.setWindowTitle("Features — OPENXMLJSON")
-        dialog.resize(640, 620)
-        layout = _QVBoxLayout(dialog)
-        s = self._style
-
-        # A read-only rich-text label in a scroll area — no editor/search UI.
-        label = _QLabel()
-        label.setTextFormat(Qt.TextFormat.RichText)
-        label.setWordWrap(True)
-        label.setOpenExternalLinks(True)
-        label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextBrowserInteraction
-        )
-        label.setMargin(10)
-        label.setText(
-            features.features_html(
-                s.text.name(), s.placeholder.name(), s.count.name()
-            )
-        )
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(label)
-        scroll.setStyleSheet(
-            f"QScrollArea {{ background: {s.view_bg.name()};"
-            f" border: 1px solid {s.chrome_border.name()}; }}"
-            f" QLabel {{ background: {s.view_bg.name()}; }}"
-        )
-        layout.addWidget(scroll)
-        dialog.exec()
+        QDesktopServices.openUrl(
+            QUrl("https://openxmljson.com/pages/features"))
 
     def check_for_updates(self, manual: bool) -> None:
         """Check GitHub Releases for a newer version (off the GUI thread).
@@ -3676,6 +3664,65 @@ class MainWindow(QMainWindow):
             "zero-copy memory-mapped structural index.\n\n"
             "Author: OPENXMLJSON",
         )
+
+    # -- licensing (soft gate) -----------------------------------------------------------------
+
+    def _show_size_upsell(self, size_bytes: int) -> None:
+        """The conversion moment: a JSON file exceeds the Trial cap. Offer to
+        activate a key or open the store, showing the file size and limit."""
+        from openxmljson.licensing.config import ApiConfig
+
+        limit_mb = TRIAL_MAX_BYTES // (1024 * 1024)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("Activate to open larger files")
+        box.setText(
+            f"This file is {size_bytes / 1e6:.0f} MB. The free version opens "
+            f"files up to {limit_mb} MB.\n\n"
+            "Activate a license to open files of any size — Essential "
+            "($4.99/mo) or Premium ($49.99/yr). Both remove the size limit.")
+        activate_btn = box.addButton("Activate…",
+                                     QMessageBox.ButtonRole.AcceptRole)
+        buy_btn = box.addButton("View plans",
+                                QMessageBox.ButtonRole.ActionRole)
+        box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is activate_btn:
+            self.activate_license()
+        elif clicked is buy_btn:
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl(ApiConfig.from_env().store_url))
+
+    def activate_license(self) -> None:
+        """Help ▸ Activate… (and status-badge click): open the license dialog,
+        then refresh the badge. Soft gate — the app keeps working regardless."""
+        try:
+            from openxmljson.licensing.ui import LicenseDialog
+        except Exception as exc:   # missing optional dep, etc.
+            QMessageBox.warning(
+                self, "Activation unavailable",
+                f"The activation dialog couldn't be opened:\n\n{exc}")
+            return
+        LicenseDialog(parent=self).exec()
+        self._refresh_license_badge()
+        if hasattr(self, "_welcome"):
+            self._welcome.refresh()   # update badge + Membership card
+
+    def _refresh_license_badge(self) -> None:
+        """Show the current license state in the status bar: Trial (red),
+        Essential (blue) or Premium (green)."""
+        if not hasattr(self, "_license_label"):
+            return
+        from openxmljson.licensing import status as _lic
+
+        label, color = _lic.membership_badge()
+        self._license_label.setText(f"● {label}")
+        self._license_label.setStyleSheet(f"color: {color}; padding: 0 8px;")
+        self._license_label.setToolTip(
+            "Manage your subscription" if label != "Trial"
+            else "Trial — click to activate a license")
 
     # -- search --------------------------------------------------------------------------------
 

@@ -503,7 +503,7 @@ class WelcomeWidget(QWidget):
             rows = [("Status", "Active", ""),
                     ("Plan", plan_label, "")]
             if ent.email:
-                rows.append(("Account", _middle_ellipsis(ent.email, 16),
+                rows.append(("Account", _middle_ellipsis(ent.email, 34),
                              ent.email))   # full address on hover
             rows.append(("Valid", "Lifetime" if lifetime
                          else f"until {ent.expires_at[:10]}", ""))
@@ -532,6 +532,10 @@ class WelcomeWidget(QWidget):
             hb.addWidget(val)
             self._member_rows.addWidget(row)
             row.show()   # render on an already-visible card (runtime rebuild)
+        # Widen the card 50% when showing an email so the address fits;
+        # otherwise keep it the same width as the other right-side cards.
+        has_email = active and bool(ent and ent.email)
+        self._member.setFixedWidth(int(STATS_W * 1.5) if has_email else STATS_W)
         # Force the card to re-measure so new rows don't overlap the title.
         self._member.adjustSize()
 
@@ -697,7 +701,10 @@ class WelcomeWidget(QWidget):
         self._member.setVisible(show_member)
         if show_member:
             base = my + (self._mem.height() + gap if show_mem else 0)
-            self._member.move(sx, base)
+            # Right-align by its own width — it may be wider (email present)
+            # than the other cards, but keeps the same right edge.
+            member_x = w - self._member.width() - 48
+            self._member.move(member_x, base)
 
     @staticmethod
     def _clamp(value, lo, hi, toward):

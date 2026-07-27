@@ -646,13 +646,13 @@ class WelcomeWidget(QWidget):
         place(left, "left")
         place(right, "right")
 
-        # Top-right stats panel — shown whenever files have been served, in
-        # every mode (independent of the feature boxes), when there's room to
-        # the right of the centered card.
+        # Top-right stats panel — shown whenever files have been served and
+        # there's room to the right of the card. Hidden in the blank ("none")
+        # mode so it disappears together with the center box.
         self._stats.adjustSize()
         sx = w - STATS_W - 48   # a bit off the right edge, clear of watermark
         has_room = sx > cx + cw + 20
-        show_stats = self._has_stats and has_room
+        show_stats = self._has_stats and has_room and self._mode != "none"
         top_y = 18   # right cards anchored near the top (matches the card)
         self._stats.setVisible(show_stats)
         if show_stats:

@@ -1845,6 +1845,9 @@ class MainWindow(QMainWindow):
 
     def _apply_style(self) -> None:
         self.setStyleSheet(stylesheet(self._style))
+        # Remove the vertical separator lines Qt draws around each permanent
+        # status-bar widget (visible under the Windows/Fusion style).
+        self.statusBar().setStyleSheet("QStatusBar::item { border: 0px; }")
         if hasattr(self, "_recent_dock"):
             s = self._style
             self._recent_dock.setStyleSheet(

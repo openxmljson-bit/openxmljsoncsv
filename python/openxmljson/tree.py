@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import json
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QAction,
     QFontMetricsF,
     QGuiApplication,
+    QKeyEvent,
     QPainter,
     QPen,
 )
@@ -243,6 +244,14 @@ class DocumentTreeView(QTreeView):
         #: immediate / confirm / disabled tiers for "Expand All".
         self._allow_expand_all = False
         self._expand_nodes = 0
+        # Vim-style keyboard nav: a one-key "leader" buffer (y…, g…) that
+        # resets shortly after so a stale prefix doesn't linger.
+        self._pending_key = ""
+        self._pending_timer = QTimer(self)
+        self._pending_timer.setSingleShot(True)
+        self._pending_timer.setInterval(800)
+        self._pending_timer.timeout.connect(
+            lambda: setattr(self, "_pending_key", ""))
         # Back-to-top button, shown once scrolled down.
         self._fab = QPushButton("↑", self)
         self._fab.setFixedSize(40, 40)
@@ -262,6 +271,90 @@ class DocumentTreeView(QTreeView):
             event.accept()
             return
         super().wheelEvent(event)
+
+    # -- keyboard shortcuts (Vim-style) ----------------------------------------
+
+    def _current_source(self):
+        """(source_model, source_index) for the current row, mapping through a
+        filter proxy if present. Returns (None, None) when nothing is current."""
+        index = self.currentIndex()
+        model = self.model()
+        if model is None or not index.isValid():
+            return None, None
+        if hasattr(model, "mapToSource"):
+            index = model.mapToSource(index)
+            model = model.sourceModel()
+        return model, index
+
+    def _copy_to_clipboard(self, text: str, label: str) -> None:
+        QGuiApplication.clipboard().setText(text or "")
+        win = self.window()
+        if hasattr(win, "statusBar"):
+            win.statusBar().showMessage(f"Copied {label}", 1500)
+
+    def _forward_key(self, key) -> None:
+        """Reuse QTreeView's built-in navigation for an arrow key."""
+        super().keyPressEvent(
+            QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier))
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        text = event.text()
+        pending, self._pending_key = self._pending_key, ""
+
+        # -- copy leader: y then {y|v|p|k|n} -----------------------------------
+        if pending == "y":
+            self._pending_timer.stop()
+            model, index = self._current_source()
+            if model is not None:
+                if text in ("y", "v"):      # yy / yv -> value
+                    self._copy_to_clipboard(model.value_text(index), "value")
+                elif text == "p":            # yp -> path
+                    self._copy_to_clipboard(model.path_text(index), "path")
+                elif text in ("k", "n"):     # yk / yn -> key / name
+                    self._copy_to_clipboard(model.name_text(index), "key")
+                else:
+                    return super().keyPressEvent(event)
+            event.accept()
+            return
+
+        # -- goto leader: g then g -> root -------------------------------------
+        if pending == "g" and text == "g":
+            self._pending_timer.stop()
+            model = self.model()
+            if model is not None and model.rowCount() > 0:
+                self.setCurrentIndex(model.index(0, 0))
+                self.scrollToTop()
+            event.accept()
+            return
+
+        # -- start a leader ----------------------------------------------------
+        if text in ("y", "g"):
+            self._pending_key = text
+            self._pending_timer.start()
+            event.accept()
+            return
+
+        # -- single-key navigation (h/j/k/l + friends) -------------------------
+        nav = {
+            "h": Qt.Key.Key_Left,    # collapse / go to parent
+            "l": Qt.Key.Key_Right,   # expand / go to first child
+            "j": Qt.Key.Key_Down,
+            "k": Qt.Key.Key_Up,
+        }
+        if text in nav and event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            self._forward_key(nav[text])
+            event.accept()
+            return
+        if text == "G":              # jump to the last visible row
+            self._forward_key(Qt.Key.Key_End)
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Backspace:   # go to parent
+            self._forward_key(Qt.Key.Key_Left)
+            event.accept()
+            return
+
+        super().keyPressEvent(event)
 
     def set_style(self, style: Style) -> None:
         self._style = style

@@ -65,11 +65,22 @@ class LicenseClient:
             url, data=data, method="POST",
             headers={"Content-Type": "application/json",
                      "Accept": "application/json"})
+        ctx = ssl.create_default_context()
+        # Load a CA bundle explicitly — on Windows (and frozen apps) Python's
+        # ssl doesn't use the OS trust store, so verification fails without it.
+        # Prefer certifi's bundled cacert.pem; fall back to its embedded PEM
+        # text (works even if the file path isn't present in the bundle).
         try:
+            import os as _os
+
             import certifi
-            ctx = ssl.create_default_context(cafile=certifi.where())
+            where = certifi.where()
+            if where and _os.path.exists(where):
+                ctx.load_verify_locations(cafile=where)
+            else:
+                ctx.load_verify_locations(cadata=certifi.contents())
         except Exception:
-            ctx = ssl.create_default_context()
+            pass   # fall back to the system default context
         try:
             with urllib.request.urlopen(
                     req, timeout=self.cfg.request_timeout, context=ctx) as r:

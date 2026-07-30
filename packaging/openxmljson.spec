@@ -19,7 +19,12 @@
 
 import os
 import sys
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+# certifi ships a CA bundle (cacert.pem) that urllib/ssl needs to verify TLS.
+# Windows' Python doesn't use the OS trust store, so this MUST be bundled or
+# license activation fails with CERTIFICATE_VERIFY_FAILED.
+_CERTIFI_DATA = collect_data_files("certifi")
 
 # Target architecture for the macOS build. Leave unset for a native (host-arch)
 # build; set OXJ_TARGET_ARCH=universal2 to build a Universal binary that runs on
@@ -86,13 +91,16 @@ a = Analysis(
     ["launcher.py"],
     pathex=["."],
     binaries=[],
-    datas=[],
+    datas=[
+        *_CERTIFI_DATA,                       # CA bundle for TLS verification
+    ],
     hiddenimports=[
         "openxmljson._native",
         *collect_submodules("openxmljson"),
         *collect_submodules("jsbeautifier"),  # .js formatter (lazy-imported)
         *collect_submodules("pygments"),      # lexers resolve dynamically
         "yaml",                               # YAML open/export (lazy-imported)
+        "certifi",                            # TLS CA bundle (license activation)
     ],
     hookspath=[],
     runtime_hooks=[],

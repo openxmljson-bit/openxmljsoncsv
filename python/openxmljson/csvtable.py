@@ -219,6 +219,12 @@ class RecordFilterProxy(QSortFilterProxyModel):
         return bool(self._col_filters)
 
     def filterAcceptsRow(self, source_row: int, _parent) -> bool:  # noqa: N802
+        # FAST PATH — this is called once per source row whenever Qt builds its
+        # row mapping, i.e. N Python calls for an N-row table (hundreds of
+        # thousands on a big CSV). With no filter active every row is accepted,
+        # so return immediately without touching the model.
+        if self._visible is None and not self._col_filters:
+            return True
         model: RecordTableModel = self.sourceModel()
         if self._visible is not None:
             node = model.record_node(source_row)

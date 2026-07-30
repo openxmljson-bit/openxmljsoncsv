@@ -60,6 +60,18 @@ impl Format {
         }
     }
 
+    /// Choose the parser from an explicit name (case-insensitive), overriding
+    /// extension detection — used to open delimited data whose extension isn't
+    /// `.csv` (e.g. a pipe-separated `.txt`). Unknown names fall back to JSON.
+    pub fn from_name(name: &str) -> Format {
+        match name.to_ascii_lowercase().as_str() {
+            "xml" => Format::Xml,
+            "csv" => Format::Csv,
+            "tsv" | "tab" => Format::Tsv,
+            _ => Format::Json,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Format::Json => "JSON",

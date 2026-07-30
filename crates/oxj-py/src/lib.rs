@@ -29,12 +29,19 @@ struct Document {
 
 #[pymethods]
 impl Document {
-    /// Open and parse a file, picking the parser by extension (F8).
+    /// Open and parse a file, picking the parser by extension (F8) — or by an
+    /// explicit `format` name ("json"/"xml"/"csv"/"tsv") when given, so
+    /// delimited data with a non-standard extension (e.g. a pipe-separated
+    /// `.txt`) can be parsed as CSV.
     #[staticmethod]
-    fn open(py: Python<'_>, path: &str) -> PyResult<Document> {
+    #[pyo3(signature = (path, format=None))]
+    fn open(py: Python<'_>, path: &str, format: Option<&str>) -> PyResult<Document> {
         let mapping =
             Mapping::open(Path::new(path)).map_err(|e| PyIOError::new_err(e.to_string()))?;
-        let format = Format::from_path(Path::new(path));
+        let format = match format {
+            Some(name) => Format::from_name(name),
+            None => Format::from_path(Path::new(path)),
+        };
         // The parse is a single linear pass over the mapping; release the
         // GIL so the UI thread stays live.
         let index = py
@@ -333,10 +340,15 @@ struct LazyDocument {
 
 #[pymethods]
 impl LazyDocument {
-    /// Open a JSON/NDJSON, CSV/TSV or XML file for lazy indexing.
+    /// Open a JSON/NDJSON, CSV/TSV or XML file for lazy indexing. `format`
+    /// ("json"/"xml"/"csv"/"tsv") overrides extension-based detection.
     #[staticmethod]
-    fn open(path: &str) -> PyResult<LazyDocument> {
-        let format = Format::from_path(Path::new(path));
+    #[pyo3(signature = (path, format=None))]
+    fn open(path: &str, format: Option<&str>) -> PyResult<LazyDocument> {
+        let format = match format {
+            Some(name) => Format::from_name(name),
+            None => Format::from_path(Path::new(path)),
+        };
         let mapping =
             Mapping::open(Path::new(path)).map_err(|e| PyIOError::new_err(e.to_string()))?;
         // open() only reads the BOM/header — no full parse, so no GIL dance.

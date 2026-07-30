@@ -103,6 +103,42 @@ def _looks_ndjson(path: str) -> bool:
         return False
 
 
+#: Delimiters the CSV engine can sniff, with friendly names for the prompt.
+_DELIM_NAMES = {",": "comma", ";": "semicolon", "\t": "tab", "|": "pipe"}
+
+#: Ceiling for opening delimited text as a table. Beyond this the structural
+#: index (a node per cell) is too heavy, so such files stay in the text viewer.
+TXT_TABLE_MAX_BYTES = 1024 * 1024 * 1024   # 1 GB
+
+
+def _looks_delimited(path: str):
+    """If the first few non-empty lines look like delimited data — one of
+    ``, ; \\t |`` present on every line with the *same* field count — return
+    that delimiter; else None. Reads only a handful of lines, so it stays cheap
+    on huge files. Ragged or prose-like text returns None."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = []
+            for line in fh:
+                s = line.rstrip("\n\r")
+                if s.strip():
+                    lines.append(s)
+                if len(lines) >= 5:
+                    break
+    except OSError:
+        return None
+    if len(lines) < 2:
+        return None
+    best = None
+    for delim in (",", ";", "\t", "|"):
+        counts = [ln.count(delim) for ln in lines]
+        if all(c >= 1 for c in counts) and len(set(counts)) == 1:
+            # Prefer the delimiter that yields the most columns.
+            if best is None or counts[0] > best[1]:
+                best = (delim, counts[0])
+    return best[0] if best else None
+
+
 SCOPES = ["All", "Keys", "Values", "Attributes"]
 
 #: Tab cap: every open tab keeps its node index resident (24 B/node), so
@@ -252,17 +288,24 @@ class _OpenTask(QRunnable):
     """Parse a document off the GUI thread. The native parser releases the
     GIL, so the main event loop keeps running (activity LEDs animate)."""
 
-    def __init__(self, path: str, signals: _OpenSignals, lazy: bool = False):
+    def __init__(self, path: str, signals: _OpenSignals, lazy: bool = False,
+                 fmt: str = None):
         super().__init__()
         self._path = path
         self._signals = signals
         self._lazy = lazy
+        #: Explicit engine format ("csv" for delimited .txt/.log); None = detect
+        #: from the file extension.
+        self._fmt = fmt
 
     def run(self) -> None:
         t0 = time.perf_counter()
         try:
             if self._lazy and LazyDocument is not None:
-                doc = LazyDocument.open(self._path)
+                # Pass the override only when set, so the call still works
+                # against a native module built before `format` existed.
+                doc = (LazyDocument.open(self._path, self._fmt)
+                       if self._fmt else LazyDocument.open(self._path))
                 # open() only mmaps; the top-level scan would otherwise land
                 # on the GUI thread at first paint and freeze it. prime()
                 # runs that scan here with the GIL released, so the window
@@ -272,7 +315,8 @@ class _OpenTask(QRunnable):
                 except Exception:
                     pass  # best-effort; a real error resurfaces on render
             else:
-                doc = Document.open(self._path)
+                doc = (Document.open(self._path, self._fmt)
+                       if self._fmt else Document.open(self._path))
             err = None
         except Exception as exc:  # surfaced on the GUI thread
             doc, err = None, exc
@@ -857,6 +901,11 @@ class MainWindow(QMainWindow):
         view.set_xml_highlight(
             str(self._settings.value("xml_highlight", "true")).lower() == "true"
         )
+        # The view isn't parented to this window until addTab(), and load()
+        # (which consults this) runs first — so hand it the preference now.
+        view.set_csv_table_default(
+            str(self._settings.value("csv_table_default", "false")).lower()
+            in ("true", "1", "yes"))
         return view
 
     @contextmanager
@@ -1767,6 +1816,20 @@ class MainWindow(QMainWindow):
             group.addAction(action)
             appearance_menu.addAction(action)
 
+        # Whether CSV/TSV (incl. delimited .txt) lands in the spreadsheet table
+        # or the tree on open. Default OFF: the tree opens with a collapsed root
+        # (near-instant), while the table has to enumerate every record up front
+        # — noticeably slower on large files. The table stays one click away.
+        self._csv_table_default_action = QAction(
+            "Open CSV in Table View", self, checkable=True)
+        self._csv_table_default_action.setChecked(
+            str(self._settings.value("csv_table_default", "false")).lower()
+            in ("true", "1", "yes"))
+        self._csv_table_default_action.toggled.connect(
+            lambda on: self._settings.setValue(
+                "csv_table_default", "true" if on else "false"))
+        view_menu.addAction(self._csv_table_default_action)
+
         lazy_menu = view_menu.addMenu("Lazy Indexing (large JSON)")
         lazy_mode = str(self._settings.value("lazy_mode", "auto")).lower()
         lazy_group = QActionGroup(self)
@@ -2029,14 +2092,45 @@ class MainWindow(QMainWindow):
                 if TRIAL_MAX_BYTES and size > TRIAL_MAX_BYTES:
                     self._show_size_upsell(size)
                     return
+        open_format = None   # explicit engine format (delimited .txt/.log)
         if ext in TEXT_EXTS:
             # A .log whose lines are JSON objects is really an NDJSON log —
             # open it through the engine (structured tree/table, lazy for huge
             # files) instead of the plain-text viewer.
             if ext == ".log" and _looks_ndjson(path):
                 pass  # fall through to the structural open below
+            elif ext in (".txt", ".log"):
+                # Delimited text (pipe/comma/tab/semicolon) can open as a real
+                # CSV document — tree, table, sort, filter, coverage, export.
+                # Ask once; the choice is remembered so Recent / re-open goes
+                # straight there (also covers drag & drop, which lands here).
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    size = 0
+                if path in self._table_txt_paths() and size <= TXT_TABLE_MAX_BYTES:
+                    open_format = "csv"          # remembered choice
+                else:
+                    delim = _looks_delimited(path)
+                    if not delim:
+                        self._open_text_view(path)
+                        return
+                    choice = self._confirm_open_as_table(path, delim, size)
+                    if choice is None:
+                        return                   # cancelled
+                    if choice == "text":
+                        self._open_text_view(path)
+                        return
+                    open_format = "csv"
+                    self._remember_table_txt(path)
+                # Data formats are trial-gated like any other.
+                from openxmljson.licensing import status as _lic
+                if not _lic.is_licensed():
+                    if TRIAL_MAX_BYTES and size > TRIAL_MAX_BYTES:
+                        self._show_size_upsell(size)
+                        return
             else:
-                self._open_text_view(path)
+                self._open_text_view(path)       # .js / .py — code, not data
                 return
         if ext in YAML_EXTS:
             self._open_yaml(path)
@@ -2054,7 +2148,8 @@ class MainWindow(QMainWindow):
         signals.done.connect(self._on_open_done)
         self._open_signals.append(signals)  # keep alive until delivered
         self.statusBar().showMessage(f"Loading {os.path.basename(path)}…")
-        QThreadPool.globalInstance().start(_OpenTask(path, signals, use_lazy))
+        QThreadPool.globalInstance().start(
+            _OpenTask(path, signals, use_lazy, open_format))
 
     def _on_open_done(self, path, doc, err, load_ms=0.0) -> None:
         self._pending_opens.discard(path)
@@ -2108,10 +2203,15 @@ class MainWindow(QMainWindow):
         self._update_tab_marks()
         # Count .log files as LOG even when opened structurally (NDJSON logs),
         # and converted YAML as YAML.
+        # Count by what it actually is: converted YAML as YAML, an NDJSON .log
+        # as LOG, and a delimited .txt/.log opened through the CSV engine by its
+        # engine format (CSV/TSV).
+        _fmt = doc.format_name()
         self._bump_file_type(
             "YAML" if origin
-            else "LOG" if path.lower().endswith(".log")
-            else doc.format_name())
+            else "LOG" if (path.lower().endswith(".log")
+                           and _fmt not in ("CSV", "TSV"))
+            else _fmt)
         self._update_central()
         self._remember_recent(path)
         self._watch(path)
@@ -2173,6 +2273,65 @@ class MainWindow(QMainWindow):
         self._yaml_origin[tmp] = path
         self._remember_recent(path)   # recents reopen the original .yaml
         self.open_path(tmp)
+
+    def _confirm_open_as_table(self, path: str, delim: str, size: int):
+        """Ask how a delimited .txt/.log should open. Returns 'table', 'text',
+        or None (cancelled). Beyond TXT_TABLE_MAX_BYTES the table option is
+        withheld — the structural index would be too heavy — and the user is
+        told why."""
+        name = _DELIM_NAMES.get(delim, "delimited")
+        base = os.path.basename(path)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Open as table?")
+        too_big = size > TXT_TABLE_MAX_BYTES
+        if too_big:
+            limit_gb = TXT_TABLE_MAX_BYTES / 1024 ** 3
+            box.setText(
+                f"“{base}” looks like {name}-separated data, but it is "
+                f"{size / 1024 ** 3:.1f} GB — table view supports up to "
+                f"{limit_gb:.0f} GB.\n\nIt can be opened as plain text "
+                f"(read-only) instead.")
+            text_btn = box.addButton("Open as Text",
+                                     QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(text_btn)
+            box.exec()
+            return "text" if box.clickedButton() is text_btn else None
+        box.setText(
+            f"“{base}” looks like {name}-separated data.\n\n"
+            "Open it as a table — with the spreadsheet view, sorting, "
+            "filters, column tools and export — or as plain text (read-only)?")
+        table_btn = box.addButton("Open as Table",
+                                  QMessageBox.ButtonRole.AcceptRole)
+        text_btn = box.addButton("Open as Text",
+                                 QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(table_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is table_btn:
+            return "table"
+        if clicked is text_btn:
+            return "text"
+        return None
+
+    # -- remembered "open as table" choices ------------------------------------
+
+    def _table_txt_paths(self) -> set:
+        """Paths the user chose to open as a table, so Recent / re-open goes
+        straight to the CSV view without asking again."""
+        value = self._settings.value("txt_as_table", [])
+        if isinstance(value, str):
+            return {value} if value else set()
+        return set(value or [])
+
+    def _remember_table_txt(self, path: str) -> None:
+        paths = self._table_txt_paths()
+        if path not in paths:
+            paths.add(path)
+            # Keep the list bounded.
+            self._settings.setValue("txt_as_table", list(paths)[-200:])
 
     def _open_text_view(self, path: str) -> None:
         """Open a .txt/.js file as a read-only plain-text tab (no engine)."""

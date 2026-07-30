@@ -76,6 +76,8 @@ class DocumentView(QWidget):
 
     def __init__(self, style: Style, font, zoom_callback=None, parent=None):
         super().__init__(parent)
+        #: View ▸ "Open CSV in Table View" preference (set by the window).
+        self._csv_table_pref = False
         self.doc = None
         self.path = None
         self.model = None
@@ -209,8 +211,13 @@ class DocumentView(QWidget):
                 f"{doc.format_name()} · {doc.file_bytes() / 1e6:.1f} MB file · "
                 f"{doc.node_count():,} nodes · {doc.index_bytes() / 1e6:.1f} MB index"
             )
-        # All formats — including CSV/TSV — open in the tree view. The
-        # spreadsheet table is available on demand via View ▸ CSV Table View.
+        # All formats — including CSV/TSV and delimited .txt — open in the tree,
+        # which starts with a collapsed root and is therefore near-instant even
+        # on large files. The spreadsheet table is one click away (View ▸ CSV
+        # Table View); it must enumerate every record up front, so it is opt-in
+        # via View ▸ "Open CSV in Table View" for people who want it by default.
+        if self.supports_table() and self._csv_table_default():
+            self.set_table_mode(True)
 
         # Re-evaluate the highlight preference now the document is bound, so the
         # size/format gate is checked against the real doc (the view was created
@@ -764,6 +771,17 @@ class DocumentView(QWidget):
                 self.tree.expandToDepth(0)
 
     # -- CSV table mode ----------------------------------------------------------------
+
+    def set_csv_table_default(self, enabled: bool) -> None:
+        """Preference (View ▸ "Open CSV in Table View"): whether CSV/TSV lands
+        in the spreadsheet table on open. Set by the window before load(), since
+        the view isn't parented to the window yet at that point."""
+        self._csv_table_pref = bool(enabled)
+
+    def _csv_table_default(self) -> bool:
+        # Default OFF: the tree opens instantly (collapsed root); the table has
+        # to enumerate every record.
+        return bool(getattr(self, "_csv_table_pref", False))
 
     def supports_table(self) -> bool:
         return self.doc is not None and self.doc.format_name() in ("CSV", "TSV")

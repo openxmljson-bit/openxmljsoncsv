@@ -19,6 +19,11 @@ from typing import Any, Dict, Optional
 from openxmljson.licensing.config import ApiConfig
 
 
+#: This application's product id, sent to /verify so a key sold for another
+#: product (e.g. NARIK) is rejected even though it shares the signing secret.
+PRODUCT = "openxmljson"
+
+
 class LicenseError(Exception):
     pass
 
@@ -150,5 +155,9 @@ class LicenseClient:
         key = (key or "").strip()
         if not key:
             raise LicenseError("Enter your license key.")
+        # `product` scopes the key to this app: several products are sold from
+        # the same store and share a signing secret, so the server rejects a key
+        # issued for a different one (e.g. a NARIK key here).
         return Entitlement.from_response(
-            self._post("verify", {"email": email, "licenseKey": key}))
+            self._post("verify", {"email": email, "licenseKey": key,
+                                  "product": PRODUCT}))

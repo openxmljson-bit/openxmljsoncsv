@@ -23,8 +23,10 @@ function transport() {
   return _transport;
 }
 
-export async function sendLicenseEmail({ to, name, tier, key, expiresAt, days }) {
+export async function sendLicenseEmail({ to, name, tier, key, expiresAt, days,
+                                         product }) {
   const user = process.env.GMAIL_USER;
+  const app = product || "OPENXMLJSON";   // NARIK keys name their own app
   const greeting = name ? `Hi ${name},` : "Hi,";
   const period = days === 365 ? "annual" : days === 30 ? "monthly" : "";
   const planLine = tier
@@ -36,7 +38,7 @@ export async function sendLicenseEmail({ to, name, tier, key, expiresAt, days })
   const text =
 `${greeting}
 
-Thank you for purchasing OPENXMLJSON!
+Thank you for purchasing ${app}!
 
 ${planLine}
 ${validLine}
@@ -46,21 +48,21 @@ Your license key:
 ${key}
 
 To activate:
-  1. Open OPENXMLJSON.
+  1. Open ${app}.
   2. Go to Help > Activate...
-  3. On the "License key" tab, enter this key and the email you used to
-     purchase (${to}), then click Verify.
+  3. Enter this key and the email you used to purchase (${to}), then click
+     Verify.
 ${period === "monthly"
   ? "\nThis is a monthly plan — you'll receive a new key each renewal.\n"
   : ""}
 Keep this email for your records. If you have any trouble, just reply here.
 
-— OPENXMLJSON`;
+— ${app}`;
 
   await transport().sendMail({
-    from: `OPENXMLJSON <${user}>`,
+    from: `${app} <${user}>`,
     to,
-    subject: "Your OPENXMLJSON license key",
+    subject: `Your ${app} license key`,
     text,
   });
 }

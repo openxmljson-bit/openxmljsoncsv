@@ -16,10 +16,12 @@
 import crypto from "node:crypto";
 
 const VERSION = 1;
-// Index-stable: never reorder/remove (the index is encoded in the key).
-// Append new tiers at the end. Unknown tier -> index 0 (Essential).
-//   Unbxd = internal Netcore Unbxd lifetime license (issued with days=0).
-const TIERS = ["Essential", "Premium", "Unbxd"];
+// APPEND ONLY — the array index is encoded in every issued key, so reordering
+// or removing an entry would silently change what previously-issued keys mean.
+// Unknown tier -> index 0 (Essential).
+//   Unbxd = internal Netcore Unbxd lifetime license (issued with days=0)
+//   Narik = NARIK Edition (separate product, sold through the same store)
+const TIERS = ["Essential", "Premium", "Unbxd", "Narik"];
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"; // no I L O U
 const DAY_MS = 86_400_000;
 

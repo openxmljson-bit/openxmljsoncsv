@@ -4,3 +4,6 @@
 !.env.example
 node_modules/
 .netlify/
+
+# Local record of manually-issued license keys (contains real keys).
+issued-keys.jsonl

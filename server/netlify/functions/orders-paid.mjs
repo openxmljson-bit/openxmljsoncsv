@@ -34,18 +34,31 @@ function deriveTier(order) {
       `${li.variant_title || ""}`)
     .join(" ")
     .toLowerCase();
+  // NARIK is a separate product (its own app) sold through the same store, so
+  // check it first — its title never contains "essential"/"premium".
+  if (hay.includes("narik")) return "Narik";
   if (hay.includes("premium")) return "Premium";
   if (hay.includes("essential")) return "Essential";
   return process.env.LICENSE_DEFAULT_TIER || "Essential";
 }
 
-// Validity per tier: Essential = monthly, Premium = annual. Overridable via
-// env so you can tweak without a code change.
+// Validity per tier: Essential = monthly, Premium = annual, Narik = annual by
+// default. All overridable via env so durations can change without a deploy.
 function tierDays(tier) {
   if (tier === "Premium") {
     return parseInt(process.env.PREMIUM_DAYS || "365", 10);
   }
+  if (tier === "Narik") {
+    return parseInt(process.env.NARIK_DAYS || "365", 10);
+  }
   return parseInt(process.env.ESSENTIAL_DAYS || "30", 10);
+}
+
+//: Human-facing plan name used in the email ("Narik" -> "NARIK Edition").
+function planLabel(tier) {
+  if (tier === "Narik") return "NARIK Edition";
+  if (tier === "Unbxd") return "Netcore Unbxd";
+  return tier;
 }
 
 export default async (req) => {
@@ -73,8 +86,8 @@ export default async (req) => {
       return new Response("ok", { status: 200 });   // ack; nothing to do
     }
 
-    // Tier comes from what was purchased (Essential / Premium); its validity
-    // follows the plan: Essential monthly, Premium annual.
+    // Tier comes from what was purchased (Essential / Premium / NARIK); its
+    // validity follows the plan: Essential monthly, Premium and NARIK annual.
     const tier = deriveTier(order);
     const days = tierDays(tier);
 
@@ -84,9 +97,14 @@ export default async (req) => {
     const expiresAt = new Date(Date.now() + days * 86_400_000)
       .toISOString().slice(0, 10);   // YYYY-MM-DD
 
-    // Email the key to the buyer — this is the primary delivery path.
+    // Email the key to the buyer — this is the primary delivery path. The
+    // email shows the human-facing plan name ("NARIK Edition"), while the key
+    // itself encodes the canonical tier ("Narik").
     const name = order.customer?.first_name || "";
-    await sendLicenseEmail({ to: email, name, tier, key, expiresAt, days });
+    await sendLicenseEmail({
+      to: email, name, tier: planLabel(tier), key, expiresAt, days,
+      product: tier === "Narik" ? "NARIK" : "OPENXMLJSON",
+    });
     console.log(
       `orders-paid: emailed ${tier} key (${days}d, exp ${expiresAt}) to ` +
       `${email} (order ${order.id})`);

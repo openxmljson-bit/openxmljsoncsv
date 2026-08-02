@@ -1,9 +1,30 @@
 // POST /verify
-//   { email, code }        -> OTP mode: verify emailed code, then Shopify lookup
-//   { email, licenseKey }  -> key mode: verify signed key (no Shopify needed)
+//   { email, code }                    -> OTP mode: emailed code + Shopify lookup
+//   { email, licenseKey, product? }    -> key mode: verify signed key
 // Returns { valid, tier, email, status, expires_at, reason }.
+//
+// PRODUCT SEPARATION: several products are sold through the same store and
+// share one signing secret, so a key must only unlock the product it was sold
+// for. When the caller sends `product`, a key whose tier belongs to a different
+// product is rejected here (server-side, so it can't be patched out of a
+// client). Omitting `product` keeps the old permissive behavior.
 
 import { verifyKey } from "../../lib/keys.mjs";
+
+//: product -> tiers it accepts. "Unbxd" is the internal lifetime license and
+//: is honored by every product.
+const PRODUCT_TIERS = {
+  openxmljson: ["Essential", "Premium", "Unbxd"],
+  narik: ["Narik", "Unbxd"],
+};
+
+//: tier -> the product it was sold for (for a helpful error message).
+const TIER_PRODUCT = {
+  Essential: "OPENXMLJSON",
+  Premium: "OPENXMLJSON",
+  Narik: "NARIK",
+  Unbxd: "internal",
+};
 // NOTE: the OTP path (verifyCode, checkEntitlementByEmail) is imported lazily
 // inside the OTP branch below, so license-key verification pulls in no extra
 // dependencies (e.g. @netlify/blobs is only needed when OTP is actually used).
@@ -26,6 +47,7 @@ export default async (req) => {
   const email = String(body.email || "").trim().toLowerCase();
   const code = body.code ? String(body.code).trim() : "";
   const licenseKey = body.licenseKey ? String(body.licenseKey).trim() : "";
+  const product = String(body.product || "").trim().toLowerCase();
 
   try {
     // -- License-key mode (self-contained, signature-verified) -------------
@@ -33,6 +55,22 @@ export default async (req) => {
       const secret = process.env.LICENSE_SIGNING_SECRET;
       if (!secret) throw new Error("LICENSE_SIGNING_SECRET is not set");
       const result = verifyKey(licenseKey, secret, { email });
+
+      // Reject a key sold for a different product.
+      if (result.valid && product && PRODUCT_TIERS[product]) {
+        if (!PRODUCT_TIERS[product].includes(result.tier)) {
+          const owner = TIER_PRODUCT[result.tier] || "another product";
+          return json(200, {
+            valid: false,
+            tier: result.tier,
+            email: result.email || email,
+            status: "none",
+            expires_at: result.expires_at || "",
+            reason: `This key is for ${owner}, not this application.`,
+          });
+        }
+      }
+
       return json(200, {
         valid: !!result.valid,
         tier: result.tier || "",

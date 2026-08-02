@@ -19,6 +19,18 @@ PREMIUM_COLOR = "#2FA55A"
 UNBXD_COLOR = "#D97757"
 
 
+#: Tiers that unlock THIS product. Other products (e.g. NARIK) are sold through
+#: the same store and share the signing secret, so their keys must not unlock
+#: OPENXMLJSON. "Unbxd" is the internal lifetime license, honored everywhere.
+#: The server enforces this too (verify sends `product`); this is the local
+#: backstop, e.g. for an entitlement cached before the rule existed.
+ACCEPTED_TIERS = ("essential", "premium", "unbxd")
+
+
+def tier_allowed(tier) -> bool:
+    return (tier or "").strip().lower() in ACCEPTED_TIERS
+
+
 def current_entitlement():
     """Cached Entitlement, or None. Never raises."""
     try:
@@ -31,20 +43,20 @@ def current_entitlement():
 
 
 def is_licensed() -> bool:
-    """True when a valid (unexpired) license is cached — removes the gate."""
+    """True when a valid (unexpired) license for THIS product is cached."""
     ent = current_entitlement()
-    return bool(ent and ent.valid)
+    return bool(ent and ent.valid and tier_allowed(ent.tier))
 
 
 def tier() -> Optional[str]:
     ent = current_entitlement()
-    return ent.tier if (ent and ent.valid) else None
+    return ent.tier if (ent and ent.valid and tier_allowed(ent.tier)) else None
 
 
 def membership_badge() -> Tuple[str, str]:
     """(label, color) for the center-box / status badge."""
     ent = current_entitlement()
-    if ent and ent.valid:
+    if ent and ent.valid and tier_allowed(ent.tier):
         t = (ent.tier or "").strip().lower()
         if t == "premium":
             return ("Premium", PREMIUM_COLOR)

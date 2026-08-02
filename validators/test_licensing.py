@@ -75,11 +75,24 @@ def test_verify_otp_parses_entitlement():
     assert http.calls[0]["json"] == {"email": "a@b.com", "code": "123456"}
 
 
-def test_verify_key_sends_licenseKey():
+def test_verify_key_sends_licenseKey_and_product():
     http = _FakeHTTP(_FakeResp(200, {"valid": False, "reason": "expired"}))
     ent = LicenseClient(_cfg(), http=http).verify_key("a@b.com", " KEY ")
     assert ent.valid is False and ent.reason == "expired"
-    assert http.calls[0]["json"] == {"email": "a@b.com", "licenseKey": "KEY"}
+    # `product` scopes the key to this app so a NARIK key can't unlock it.
+    assert http.calls[0]["json"] == {
+        "email": "a@b.com", "licenseKey": "KEY", "product": "openxmljson"}
+
+
+def test_foreign_tier_is_not_licensed():
+    """A valid key issued for another product must not unlock this one."""
+    from openxmljson.licensing import status
+
+    assert status.tier_allowed("Essential") is True
+    assert status.tier_allowed("Premium") is True
+    assert status.tier_allowed("Unbxd") is True      # internal, all products
+    assert status.tier_allowed("Narik") is False     # NARIK Edition
+    assert status.tier_allowed(None) is False
 
 
 def test_429_raises_friendly_error():
